@@ -16,7 +16,7 @@ from app.connectome import (
 )
 from app.interventions.fault_detection import FaultDetectionService
 from app.interventions.replacement_service import ReplacementService
-from app.interventions.sweep import Intervention, run_sweep
+from app.interventions.sweep import Intervention, run_sweep, run_replacement_sweep
 from app.metrics.metrics import compute_baseline, failure_score
 from app.simulation import run_live_activity
 from app.simulation.factory import get_engine, list_engines
@@ -323,17 +323,51 @@ def simulation_sweep(req: SweepRequest) -> dict:
     }
 
 
+class ReplacementSweepRequest(BaseModel):
+    engine: str = "brian2"
+    neuron_model: str = "hh"
+    fraction: float = Field(0.1, ge=0.01, le=1.0)
+    strategy: Literal["random", "hub_first", "periphery_first"] = "random"
+    burn_in_ms: float = 2000.0
+    baseline_ms: float = 5000.0
+    step_ms: float = 500.0
+    edges_per_step: int = Field(1, ge=1, le=50)
+    seed: int | None = None
+
+
+@app.post("/api/simulation/replacement-sweep")
+def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
+    """Run one-by-one neuron replacement with per-step metric snapshots."""
+    graph = get_connectome_graph()
+    detector = FaultDetectionService()
+    targets = detector.select_targets_by_fraction(
+        graph=graph,
+        fraction=req.fraction,
+        seed=req.seed,
+        strategy=req.strategy,
+    )
+    result = run_replacement_sweep(
+        graph=graph,
+        target_neurons=targets,
+        engine_name=req.engine,
+        neuron_model=req.neuron_model,
+        burn_in_ms=req.burn_in_ms,
+        baseline_ms=req.baseline_ms,
+        step_ms=req.step_ms,
+        edges_per_step=req.edges_per_step,
+        seed=req.seed,
+    )
+    return result.to_dict()
+
+
 @app.get("/api/simulation/spikes")
 def simulation_spikes(
-    engine: str = "numpy",
+    engine: str = "brian2",
     neuron_model: str = "lif",
     duration_ms: float = 5000.0,
     burn_in_ms: float = 1000.0,
 ) -> dict:
-    """Run a simulation and return raw spike trains for frontend playback.
-
-    Uses the numpy engine by default for speed (~1s wall-clock).
-    """
+    """Run a simulation and return raw spike trains for frontend playback."""
     graph = get_connectome_graph()
     eng = get_engine(engine)
     eng.build(graph, neuron_model=neuron_model)

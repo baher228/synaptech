@@ -5,19 +5,15 @@ from __future__ import annotations
 from app.simulation.protocol import SimulationEngine
 
 
-_AVAILABLE_ENGINES = ("brian2", "numpy")
+_AVAILABLE_ENGINES = ("brian2",)
 _DEFAULT_ENGINE = "brian2"
 
 
 def get_engine(name: str = _DEFAULT_ENGINE) -> SimulationEngine:
     """Instantiate a simulation engine by name.
 
-    Accepted values: ``"brian2"`` (default), ``"numpy"``.
+    Accepted values: ``"brian2"`` (default).
     """
-    if name == "numpy":
-        from app.simulation.numpy_engine import NumpyLIFEngine
-        return NumpyLIFEngine()
-
     if name == "brian2":
         from app.simulation.brian2_engine import Brian2Engine
         return Brian2Engine()

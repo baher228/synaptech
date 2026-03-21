@@ -8,6 +8,7 @@ import networkx as nx
 
 from app.connectome import get_connectome_graph
 from app.interventions.fault_detection import FaultDetectionService
+from app.simulation.protocol import SimulationEngine
 
 
 @dataclass
@@ -58,8 +59,13 @@ class ReplacementSession:
 class ReplacementService:
     """Stateful replacement workflow: deploy replacement and migrate edges one-by-one."""
 
-    def __init__(self, graph: nx.DiGraph | None = None) -> None:
+    def __init__(
+        self,
+        graph: nx.DiGraph | None = None,
+        engine: SimulationEngine | None = None,
+    ) -> None:
         self.graph = graph.copy() if graph is not None else get_connectome_graph()
+        self.engine = engine
         self.sessions: dict[str, ReplacementSession] = {}
         self._session_counter = 0
         self._replacement_counter = 0
@@ -108,6 +114,12 @@ class ReplacementService:
         replacement_attrs["pos_x"] = replacement_pos_x
         replacement_attrs["pos_y"] = replacement_pos_y
         self.graph.add_node(replacement_neuron, **replacement_attrs)
+
+        if self.engine is not None:
+            self.engine.add_neuron_from_slot(
+                replacement_name=replacement_neuron,
+                copy_params_from=faulty_neuron,
+            )
 
         migrations = self._build_edge_migrations(
             faulty_neuron=faulty_neuron,
@@ -235,6 +247,27 @@ class ReplacementService:
             weight=new_chemical + new_gap,
         )
 
+        # Synchronise running engine weights
+        if self.engine is not None:
+            # Zero out old edge
+            if migration.chemical_weight > 0:
+                self.engine.set_weights(
+                    [(migration.old_source, migration.old_target)], [0.0],
+                )
+            if migration.gap_weight > 0:
+                self.engine.set_gap_weights(
+                    [(migration.old_source, migration.old_target)], [0.0],
+                )
+            # Set accumulated new edge weights
+            if new_chemical > 0:
+                self.engine.set_weights(
+                    [(migration.new_source, migration.new_target)], [new_chemical],
+                )
+            if new_gap > 0:
+                self.engine.set_gap_weights(
+                    [(migration.new_source, migration.new_target)], [new_gap],
+                )
+
     def _ghost_faulty_neuron(self, faulty_neuron: str, replacement_neuron: str) -> None:
         if faulty_neuron not in self.graph:
             return
@@ -254,3 +287,6 @@ class ReplacementService:
         in_edges = list(self.graph.in_edges(faulty_neuron))
         out_edges = list(self.graph.out_edges(faulty_neuron))
         self.graph.remove_edges_from(in_edges + out_edges)
+
+        if self.engine is not None:
+            self.engine.silence_neurons([faulty_neuron])

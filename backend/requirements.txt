@@ -4,3 +4,4 @@ networkx==3.5
 numpy==2.3.3
 scipy
 brian2
+scikit-learn

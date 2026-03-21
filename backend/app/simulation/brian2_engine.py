@@ -4,6 +4,9 @@ Supports three neuron models (``lif``, ``izhikevich``, ``hh``) selected
 at :meth:`build` time.  Chemical synapses use ``on_pre`` spike delivery;
 gap junctions use continuous voltage-dependent current.
 
+All synapses are pre-allocated as all-to-all with zero weight at build time,
+enabling live weight mutation during simulation (needed for replacement).
+
 Parameters are cross-checked against c302 ``parameters_A.py`` Level A
 (IAF: leak_reversal=-50mV, thresh=-30mV, reset=-50mV, C=3pF, g_leak=0.1nS,
 syn gbase=0.01nS, exc_erev=0mV, inh_erev=-80mV, tau_rise=3ms, tau_decay=10ms).
@@ -37,6 +40,9 @@ from brian2 import (
 )
 
 prefs.codegen.target = "numpy"
+
+# Pool size: 302 real neurons + up to 48 replacement slots
+_POOL_SIZE = 350
 
 # ------------------------------------------------------------------ #
 #  Neuron model equations — all currents in amps, divided by Cm
@@ -122,7 +128,11 @@ _HH_RESET = ""
 
 @dataclass
 class Brian2Engine:
-    """Brian2 simulation engine satisfying the SimulationEngine protocol."""
+    """Brian2 simulation engine satisfying the SimulationEngine protocol.
+
+    Pre-allocates all-to-all synapses and a neuron pool to support live
+    weight mutation and neuron replacement during simulation.
+    """
 
     name: str = "brian2"
 
@@ -130,6 +140,8 @@ class Brian2Engine:
     _name_to_idx: dict[str, int] = field(default_factory=dict)
     _sensory_indices: list[int] = field(default_factory=list)
     _n: int = 0
+    _n_real: int = 0
+    _next_free_slot: int = 0
     _model: str = "lif"
 
     _net: Network | None = None
@@ -149,7 +161,8 @@ class Brian2Engine:
     #  Protocol methods
     # ------------------------------------------------------------------ #
 
-    def build(self, graph: nx.DiGraph, neuron_model: str = "lif") -> None:
+    def build(self, graph: nx.DiGraph, neuron_model: str = "lif",
+              pool_size: int = _POOL_SIZE) -> None:
         start_scope()
         defaultclock.dt = 0.5 * ms
 
@@ -157,30 +170,34 @@ class Brian2Engine:
         self._model = neuron_model
         self._neuron_names = list(graph.nodes)
         self._name_to_idx = {name: i for i, name in enumerate(self._neuron_names)}
-        self._n = len(self._neuron_names)
+        self._n_real = len(self._neuron_names)
+        self._n = max(pool_size, self._n_real)
+        self._next_free_slot = self._n_real
         self._sensory_indices = [
             i for i, n in enumerate(self._neuron_names)
             if graph.nodes[n].get("type") == "S"
         ]
 
         self._build_neurons()
+
+        # Mark pre-allocated empty slots as dead
+        for idx in range(self._n_real, self._n):
+            self._neurons.is_alive[idx] = 0
+
         self._build_chemical_synapses(graph)
         self._build_gap_junctions(graph)
 
         self._spike_mon = SpikeMonitor(self._neurons)
         self._state_mon = StateMonitor(self._neurons, "v", record=True, dt=1 * ms)
 
-        net_objects = [
+        self._net = Network(
             self._neurons,
+            self._exc_syn,
+            self._inh_syn,
             self._gap_syn,
             self._spike_mon,
             self._state_mon,
-        ]
-        if self._exc_syn is not None:
-            net_objects.append(self._exc_syn)
-        if self._inh_syn is not None:
-            net_objects.append(self._inh_syn)
-        self._net = Network(*net_objects)
+        )
         self._sim_time_ms = 0.0
         self._run_start_ms = 0.0
         self._built = True
@@ -198,7 +215,9 @@ class Brian2Engine:
         times = np.array(self._spike_mon.t / ms)
         mask = times >= self._run_start_ms
         for idx, t in zip(indices[mask], times[mask]):
-            trains[self._neuron_names[int(idx)]].append(float(t))
+            idx_int = int(idx)
+            if idx_int < len(self._neuron_names):
+                trains[self._neuron_names[idx_int]].append(float(t))
         return trains
 
     def get_firing_rates(self) -> dict[str, float]:
@@ -210,7 +229,21 @@ class Brian2Engine:
 
     def get_voltages(self) -> dict[str, np.ndarray]:
         vs = np.array(self._state_mon.v / mV)
-        return {self._neuron_names[i]: vs[i] for i in range(self._n)}
+        return {self._neuron_names[i]: vs[i] for i in range(len(self._neuron_names))}
+
+    def get_voltage_matrix(self, window_ms: float | None = None) -> np.ndarray:
+        """Return (n_real, T) voltage matrix in mV.
+
+        If *window_ms* is given, return only the last *window_ms* columns.
+        """
+        vs = np.array(self._state_mon.v / mV)
+        mat = vs[:self._n_real, :]
+        if window_ms is not None and window_ms > 0:
+            # StateMonitor records at 1 ms resolution
+            n_samples = int(window_ms)
+            if n_samples < mat.shape[1]:
+                mat = mat[:, -n_samples:]
+        return mat
 
     def silence_neurons(self, neuron_names: list[str]) -> None:
         for name in neuron_names:
@@ -218,22 +251,68 @@ class Brian2Engine:
             if idx is not None:
                 self._neurons.is_alive[idx] = 0
 
+    def activate_neuron(self, name: str) -> None:
+        """Re-enable a previously dead neuron slot."""
+        idx = self._name_to_idx.get(name)
+        if idx is not None:
+            self._neurons.is_alive[idx] = 1
+
+    def add_neuron_from_slot(
+        self,
+        replacement_name: str,
+        copy_params_from: str | None = None,
+    ) -> int:
+        """Activate a pre-allocated empty slot for a replacement neuron.
+
+        Returns the index of the newly activated slot.
+        """
+        if self._next_free_slot >= self._n:
+            raise RuntimeError(
+                f"No free neuron slots (pool_size={self._n}, all allocated)."
+            )
+        idx = self._next_free_slot
+        self._next_free_slot += 1
+        self._neuron_names.append(replacement_name)
+        self._name_to_idx[replacement_name] = idx
+        self._neurons.is_alive[idx] = 1
+
+        # Copy drive from original neuron if specified
+        if copy_params_from is not None:
+            src_idx = self._name_to_idx.get(copy_params_from)
+            if src_idx is not None:
+                self._neurons.drive[idx] = self._neurons.drive[src_idx]
+        return idx
+
     def set_weights(
         self,
         edges: list[tuple[str, str]],
         weights: list[float],
     ) -> None:
+        """Set chemical synapse weights. Weights are in raw synapse-count units."""
         for (src, tgt), w in zip(edges, weights):
             si = self._name_to_idx.get(src)
             ti = self._name_to_idx.get(tgt)
             if si is None or ti is None:
                 continue
-            if src in GABAERGIC_NEURONS and self._inh_syn is not None:
-                mask = (self._inh_syn.i == si) & (self._inh_syn.j == ti)
-                self._inh_syn.w_inh[mask] = w * 0.005 * nS
-            elif self._exc_syn is not None:
-                mask = (self._exc_syn.i == si) & (self._exc_syn.j == ti)
-                self._exc_syn.w_exc[mask] = w * 0.005 * nS
+            syn_idx = si * self._n + ti
+            if src in GABAERGIC_NEURONS:
+                self._inh_syn.w_inh[syn_idx] = w * 0.005 * nS
+            else:
+                self._exc_syn.w_exc[syn_idx] = w * 0.005 * nS
+
+    def set_gap_weights(
+        self,
+        edges: list[tuple[str, str]],
+        weights: list[float],
+    ) -> None:
+        """Set gap junction weights. Weights are in raw synapse-count units."""
+        for (src, tgt), w in zip(edges, weights):
+            si = self._name_to_idx.get(src)
+            ti = self._name_to_idx.get(tgt)
+            if si is None or ti is None:
+                continue
+            syn_idx = si * self._n + ti
+            self._gap_syn.w_gap[syn_idx] = w * 0.005 * nS
 
     def reset(self) -> None:
         if self._built:
@@ -242,6 +321,10 @@ class Brian2Engine:
     # ------------------------------------------------------------------ #
     #  Internal builders
     # ------------------------------------------------------------------ #
+
+    def _syn_index(self, src_idx: int, tgt_idx: int) -> int:
+        """Flat index into all-to-all synapse arrays."""
+        return src_idx * self._n + tgt_idx
 
     def _build_neurons(self) -> None:
         model = self._model
@@ -322,26 +405,6 @@ class Brian2Engine:
             )
 
     def _build_chemical_synapses(self, graph: nx.DiGraph) -> None:
-        # Separate excitatory and inhibitory connections based on presynaptic
-        # neurotransmitter identity (Dale's law).
-        exc_src, exc_tgt, exc_w = [], [], []
-        inh_src, inh_tgt, inh_w = [], [], []
-
-        for src, tgt, data in graph.edges(data=True):
-            cw = data.get("chemical_weight", 0)
-            if cw <= 0:
-                continue
-            si = self._name_to_idx[src]
-            ti = self._name_to_idx[tgt]
-            if src in GABAERGIC_NEURONS:
-                inh_src.append(si)
-                inh_tgt.append(ti)
-                inh_w.append(cw)
-            else:
-                exc_src.append(si)
-                exc_tgt.append(ti)
-                exc_w.append(cw)
-
         # -- Excitatory synapses (double-exponential conductance, E_rev = 0 mV)
         exc_eqs = """
         dg_exc/dt = (-g_exc + s_exc) / tau_decay_exc : siemens (clock-driven)
@@ -359,12 +422,9 @@ class Brian2Engine:
                 "E_exc": 0 * mV,
             },
         )
-        if exc_src:
-            self._exc_syn.connect(i=exc_src, j=exc_tgt)
-            self._exc_syn.w_exc = np.array(exc_w) * 0.005 * nS
-            self._exc_syn.delay = 0.5 * ms
-        else:
-            self._exc_syn = None
+        self._exc_syn.connect()  # all-to-all
+        self._exc_syn.w_exc = 0 * nS
+        self._exc_syn.delay = 0.5 * ms
 
         # -- Inhibitory synapses (double-exponential conductance, E_rev = -80 mV)
         inh_eqs = """
@@ -383,28 +443,38 @@ class Brian2Engine:
                 "E_inh": -80 * mV,
             },
         )
-        if inh_src:
-            self._inh_syn.connect(i=inh_src, j=inh_tgt)
-            self._inh_syn.w_inh = np.array(inh_w) * 0.005 * nS
-            self._inh_syn.delay = 0.5 * ms
-        else:
-            self._inh_syn = None
+        self._inh_syn.connect()  # all-to-all
+        self._inh_syn.w_inh = 0 * nS
+        self._inh_syn.delay = 0.5 * ms
+
+        # Set non-zero weights for edges that exist in the graph
+        for src, tgt, data in graph.edges(data=True):
+            cw = data.get("chemical_weight", 0)
+            if cw <= 0:
+                continue
+            si = self._name_to_idx[src]
+            ti = self._name_to_idx[tgt]
+            syn_idx = self._syn_index(si, ti)
+            if src in GABAERGIC_NEURONS:
+                self._inh_syn.w_inh[syn_idx] = cw * 0.005 * nS
+            else:
+                self._exc_syn.w_exc[syn_idx] = cw * 0.005 * nS
 
     def _build_gap_junctions(self, graph: nx.DiGraph) -> None:
-        src_list, tgt_list, weight_list = [], [], []
-        for src, tgt, data in graph.edges(data=True):
-            gw = data.get("gap_weight", 0)
-            if gw <= 0:
-                continue
-            src_list.append(self._name_to_idx[src])
-            tgt_list.append(self._name_to_idx[tgt])
-            weight_list.append(gw)
-
         self._gap_syn = Synapses(
             self._neurons, self._neurons,
             """w_gap : siemens
                I_gap_post = w_gap * (v_pre - v_post) : amp (summed)""",
         )
-        if src_list:
-            self._gap_syn.connect(i=src_list, j=tgt_list)
-            self._gap_syn.w_gap = np.array(weight_list) * 0.005 * nS
+        self._gap_syn.connect()  # all-to-all
+        self._gap_syn.w_gap = 0 * nS
+
+        # Set non-zero weights for edges that exist in the graph
+        for src, tgt, data in graph.edges(data=True):
+            gw = data.get("gap_weight", 0)
+            if gw <= 0:
+                continue
+            si = self._name_to_idx[src]
+            ti = self._name_to_idx[tgt]
+            syn_idx = self._syn_index(si, ti)
+            self._gap_syn.w_gap[syn_idx] = gw * 0.005 * nS

@@ -8,12 +8,7 @@ import numpy as np
 
 @runtime_checkable
 class SimulationEngine(Protocol):
-    """Contract that every simulation backend must satisfy.
-
-    Both the NumPy and Brian2 engines expose identical data shapes so
-    callers (API routes, sweep orchestration) never need to know which
-    engine is running.
-    """
+    """Contract that simulation backends must satisfy."""
 
     name: str
 
@@ -44,8 +39,27 @@ class SimulationEngine(Protocol):
         """Return membrane-potential traces keyed by neuron name."""
         ...
 
+    def get_voltage_matrix(self, window_ms: float | None = None) -> np.ndarray:
+        """Return (N, T) voltage matrix in mV.
+
+        If *window_ms* is given, return only the last *window_ms* columns.
+        """
+        ...
+
     def silence_neurons(self, neuron_names: list[str]) -> None:
         """Disable the listed neurons (dropout / kill)."""
+        ...
+
+    def activate_neuron(self, name: str) -> None:
+        """Re-enable a previously silenced neuron."""
+        ...
+
+    def add_neuron_from_slot(
+        self,
+        replacement_name: str,
+        copy_params_from: str | None = None,
+    ) -> int:
+        """Allocate a pre-reserved slot for a replacement neuron."""
         ...
 
     def set_weights(
@@ -54,6 +68,14 @@ class SimulationEngine(Protocol):
         weights: list[float],
     ) -> None:
         """Overwrite chemical synapse weights for the given edges."""
+        ...
+
+    def set_gap_weights(
+        self,
+        edges: list[tuple[str, str]],
+        weights: list[float],
+    ) -> None:
+        """Overwrite gap junction weights for the given edges."""
         ...
 
     def reset(self) -> None:

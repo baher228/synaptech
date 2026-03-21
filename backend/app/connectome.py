@@ -77,6 +77,23 @@ def _gabaergic_neuron_set() -> set[str]:
 
 GABAERGIC_NEURONS: set[str] = _gabaergic_neuron_set()
 
+
+def _b_class_motor_neuron_set() -> set[str]:
+    """B-class motor neurons in C. elegans (backward locomotion CPG).
+
+    VB01-VB11: ventral B-type motor neurons (11 neurons)
+    DB01-DB07: dorsal B-type motor neurons (7 neurons)
+
+    Primary population for Kuramoto synchrony measurement.
+    """
+    names: set[str] = set()
+    names.update(f"VB{i:02d}" for i in range(1, 12))
+    names.update(f"DB{i:02d}" for i in range(1, 8))
+    return names
+
+
+B_CLASS_MOTOR_NEURONS: set[str] = _b_class_motor_neuron_set()
+
 BODY_PREFIXES = (
     "DA",
     "DB",
