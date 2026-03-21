@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 import networkx as nx
 import numpy as np
 
+from app.connectome import GABAERGIC_NEURONS
+
 from brian2 import (
     NeuronGroup,
     Synapses,
@@ -41,8 +43,10 @@ prefs.codegen.target = "numpy"
 # ------------------------------------------------------------------ #
 
 _LIF_EQS = """
-dv/dt = (g_leak*(E_leak - v) + I_gap + I_ext) / Cm : volt
+dv/dt = (g_leak*(E_leak - v) + I_gap + I_exc + I_inh + I_ext) / Cm : volt
 I_gap : amp
+I_exc : amp
+I_inh : amp
 I_ext = drive + noise_amp*randn() : amp (constant over dt)
 drive : amp
 is_alive : 1
@@ -58,9 +62,11 @@ _LIF_RESET = "v = V_reset"
 # Izhikevich with physical units (Izhikevich 2007 formulation).
 # k_izh has units of siemens/volt so that k*(v-vr)*(v-vt) yields amps.
 _IZH_EQS = """
-dv/dt = (k_izh*(v - v_r)*(v - v_t) - u_izh + I_gap + I_ext) / Cm : volt
+dv/dt = (k_izh*(v - v_r)*(v - v_t) - u_izh + I_gap + I_exc + I_inh + I_ext) / Cm : volt
 du_izh/dt = a_izh*(b_izh*(v - v_r) - u_izh) : amp
 I_gap : amp
+I_exc : amp
+I_inh : amp
 I_ext = drive + noise_amp*randn() : amp (constant over dt)
 drive : amp
 is_alive : 1
@@ -83,7 +89,7 @@ u_izh += 100*pA
 # Rate functions use v_s = v + 65*mV (displacement from rest) to match
 # the classic HH parameterisation where 0 = resting potential.
 _HH_EQS = """
-dv/dt = (g_Na*m**3*h*(E_Na - v) + g_K*n**4*(E_K - v) + g_L*(E_L - v) + I_gap + I_ext) / Cm : volt
+dv/dt = (g_Na*m**3*h*(E_Na - v) + g_K*n**4*(E_K - v) + g_L*(E_L - v) + I_gap + I_exc + I_inh + I_ext) / Cm : volt
 dm/dt = alpha_m*(1.0 - m) - beta_m*m : 1
 dn/dt = alpha_n*(1.0 - n) - beta_n*n : 1
 dh/dt = alpha_h*(1.0 - h) - beta_h*h : 1
@@ -95,6 +101,8 @@ beta_n  = (-0.002/mV)*(v_s - 10*mV + 0.001*mV) / (1.0 - exp((v_s - 10*mV + 0.001
 alpha_h = 0.07*exp(-(v_s)/(20*mV))/ms : Hz
 beta_h  = 1.0/(1.0 + exp(-(v_s - 30*mV)/(10*mV)))/ms : Hz
 I_gap : amp
+I_exc : amp
+I_inh : amp
 I_ext = drive + noise_amp*randn() : amp (constant over dt)
 drive : amp
 is_alive : 1
@@ -126,7 +134,8 @@ class Brian2Engine:
 
     _net: Network | None = None
     _neurons: NeuronGroup | None = None
-    _chem_syn: Synapses | None = None
+    _exc_syn: Synapses | None = None
+    _inh_syn: Synapses | None = None
     _gap_syn: Synapses | None = None
     _spike_mon: SpikeMonitor | None = None
     _state_mon: StateMonitor | None = None
@@ -161,13 +170,17 @@ class Brian2Engine:
         self._spike_mon = SpikeMonitor(self._neurons)
         self._state_mon = StateMonitor(self._neurons, "v", record=True, dt=1 * ms)
 
-        self._net = Network(
+        net_objects = [
             self._neurons,
-            self._chem_syn,
             self._gap_syn,
             self._spike_mon,
             self._state_mon,
-        )
+        ]
+        if self._exc_syn is not None:
+            net_objects.append(self._exc_syn)
+        if self._inh_syn is not None:
+            net_objects.append(self._inh_syn)
+        self._net = Network(*net_objects)
         self._sim_time_ms = 0.0
         self._run_start_ms = 0.0
         self._built = True
@@ -213,9 +226,14 @@ class Brian2Engine:
         for (src, tgt), w in zip(edges, weights):
             si = self._name_to_idx.get(src)
             ti = self._name_to_idx.get(tgt)
-            if si is not None and ti is not None:
-                mask = (self._chem_syn.i == si) & (self._chem_syn.j == ti)
-                self._chem_syn.w[mask] = w * 0.3 * mV
+            if si is None or ti is None:
+                continue
+            if src in GABAERGIC_NEURONS and self._inh_syn is not None:
+                mask = (self._inh_syn.i == si) & (self._inh_syn.j == ti)
+                self._inh_syn.w_inh[mask] = w * 0.005 * nS
+            elif self._exc_syn is not None:
+                mask = (self._exc_syn.i == si) & (self._exc_syn.j == ti)
+                self._exc_syn.w_exc[mask] = w * 0.005 * nS
 
     def reset(self) -> None:
         if self._built:
@@ -304,23 +322,73 @@ class Brian2Engine:
             )
 
     def _build_chemical_synapses(self, graph: nx.DiGraph) -> None:
-        src_list, tgt_list, weight_list = [], [], []
+        # Separate excitatory and inhibitory connections based on presynaptic
+        # neurotransmitter identity (Dale's law).
+        exc_src, exc_tgt, exc_w = [], [], []
+        inh_src, inh_tgt, inh_w = [], [], []
+
         for src, tgt, data in graph.edges(data=True):
             cw = data.get("chemical_weight", 0)
             if cw <= 0:
                 continue
-            src_list.append(self._name_to_idx[src])
-            tgt_list.append(self._name_to_idx[tgt])
-            weight_list.append(cw)
+            si = self._name_to_idx[src]
+            ti = self._name_to_idx[tgt]
+            if src in GABAERGIC_NEURONS:
+                inh_src.append(si)
+                inh_tgt.append(ti)
+                inh_w.append(cw)
+            else:
+                exc_src.append(si)
+                exc_tgt.append(ti)
+                exc_w.append(cw)
 
-        self._chem_syn = Synapses(
+        # -- Excitatory synapses (double-exponential conductance, E_rev = 0 mV)
+        exc_eqs = """
+        dg_exc/dt = (-g_exc + s_exc) / tau_decay_exc : siemens (clock-driven)
+        ds_exc/dt = -s_exc / tau_rise_exc              : siemens (clock-driven)
+        w_exc : siemens
+        I_exc_post = g_exc * (E_exc - v_post) : amp (summed)
+        """
+        self._exc_syn = Synapses(
             self._neurons, self._neurons,
-            "w : volt",
-            on_pre="v_post += w * int(is_alive_pre > 0.5)",
+            model=exc_eqs,
+            on_pre="s_exc += w_exc * int(is_alive_pre > 0.5)",
+            namespace={
+                "tau_rise_exc": 3 * ms,
+                "tau_decay_exc": 10 * ms,
+                "E_exc": 0 * mV,
+            },
         )
-        if src_list:
-            self._chem_syn.connect(i=src_list, j=tgt_list)
-            self._chem_syn.w = np.array(weight_list) * 0.3 * mV
+        if exc_src:
+            self._exc_syn.connect(i=exc_src, j=exc_tgt)
+            self._exc_syn.w_exc = np.array(exc_w) * 0.005 * nS
+            self._exc_syn.delay = 0.5 * ms
+        else:
+            self._exc_syn = None
+
+        # -- Inhibitory synapses (double-exponential conductance, E_rev = -80 mV)
+        inh_eqs = """
+        dg_inh/dt = (-g_inh + s_inh) / tau_decay_inh : siemens (clock-driven)
+        ds_inh/dt = -s_inh / tau_rise_inh              : siemens (clock-driven)
+        w_inh : siemens
+        I_inh_post = g_inh * (E_inh - v_post) : amp (summed)
+        """
+        self._inh_syn = Synapses(
+            self._neurons, self._neurons,
+            model=inh_eqs,
+            on_pre="s_inh += w_inh * int(is_alive_pre > 0.5)",
+            namespace={
+                "tau_rise_inh": 3 * ms,
+                "tau_decay_inh": 10 * ms,
+                "E_inh": -80 * mV,
+            },
+        )
+        if inh_src:
+            self._inh_syn.connect(i=inh_src, j=inh_tgt)
+            self._inh_syn.w_inh = np.array(inh_w) * 0.005 * nS
+            self._inh_syn.delay = 0.5 * ms
+        else:
+            self._inh_syn = None
 
     def _build_gap_junctions(self, graph: nx.DiGraph) -> None:
         src_list, tgt_list, weight_list = [], [], []

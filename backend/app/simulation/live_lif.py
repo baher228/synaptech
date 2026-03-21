@@ -7,7 +7,7 @@ import numpy as np
 import numpy.typing as npt
 import networkx as nx
 
-from app.connectome import get_connectome_graph
+from app.connectome import get_connectome_graph, GABAERGIC_NEURONS
 
 
 @dataclass(frozen=True)
@@ -31,26 +31,6 @@ class LiveDriveConfig:
     sensory_oscillation_amplitude: float = 0.25
     background_tonic_current: float = 0.12
     background_noise_std: float = 0.06
-
-
-def _gabaergic_neuron_set() -> set[str]:
-    # Cook 2019 synapse CSV here does not include neurotransmitter labels.
-    # We use a conservative, known GABAergic subset to sign chemical output.
-    names = {
-        "AVL",
-        "DVB",
-        "RMEV",
-        "RMED",
-        "RMEL",
-        "RMER",
-        "RIS",
-    }
-    names.update({f"DD{idx:02d}" for idx in range(1, 7)})
-    names.update({f"VD{idx:02d}" for idx in range(1, 14)})
-    return names
-
-
-GABAERGIC_NEURONS = _gabaergic_neuron_set()
 
 
 class LIFNetworkSimulator:
