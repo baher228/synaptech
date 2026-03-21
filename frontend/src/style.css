@@ -103,6 +103,43 @@ body {
   box-shadow: var(--shadow);
 }
 
+.live-status {
+  position: absolute;
+  right: 28px;
+  bottom: 28px;
+  max-width: min(420px, calc(100vw - 56px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+
+.live-status.live-status-error {
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
+.live-title {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.live-line {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
 .legend-item {
   display: flex;
   align-items: center;

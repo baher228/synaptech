@@ -262,6 +262,10 @@ def run_live_activity(
         }
         for idx in ranked_indices
     ]
+    firing_rates_hz_by_node = {
+        name: float(np.round(rate, 6))
+        for name, rate in zip(simulator.node_names, firing_rates_hz, strict=True)
+    }
 
     return {
         "config": {
@@ -295,6 +299,7 @@ def run_live_activity(
         "population_spike_rate_hz": float(
             spike_counts.sum() / (simulator.node_count * duration_sec)
         ),
+        "firing_rates_hz_by_node": firing_rates_hz_by_node,
         "top_firing_neurons": top_firing_neurons,
         "samples": {
             "times_ms": sample_times_ms,
