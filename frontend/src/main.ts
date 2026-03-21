@@ -1,6 +1,6 @@
 import './style.css'
 
-import { fetchGraphData } from './api'
+import { fetchGraphData, fetchSpikeTrains } from './api'
 import { createRenderer } from './graph/renderer'
 import { setupInteractions } from './graph/interactions'
 import { createFiringEngine } from './simulation/firing-engine'
@@ -8,7 +8,7 @@ import { createAnimationLoop } from './simulation/animation-loop'
 import { createTimescaleControl } from './ui/timescale-control'
 import { createNeuronTooltip } from './ui/neuron-tooltip'
 import { createLegend } from './ui/legend'
-import type { LiveSimulationResponse } from './types'
+import type { LiveSimulationResponse, SpikeData } from './types'
 
 async function boot(): Promise<void> {
   const graphContainer = document.getElementById('graph-container')
@@ -45,8 +45,26 @@ async function boot(): Promise<void> {
     `
     uiOverlay.appendChild(liveStatus)
 
-    // Start backend-driven firing engine + animation loop
+    let spikeData: SpikeData | undefined
+    try {
+      loading.querySelector('.loading-text')!.textContent = 'Running simulation...'
+      spikeData = await fetchSpikeTrains()
+      console.log(
+        `Loaded spike data: ${spikeData.active_count}/${spikeData.neuron_count} active neurons over ${spikeData.duration_ms}ms`,
+      )
+      if (spikeData && Object.keys(spikeData.spike_trains).length > 0) {
+        liveStatus.innerHTML = `
+          <div class="live-title">Live Simulation</div>
+          <div class="live-line">Status: Replay mode</div>
+          <div class="live-line">Playing ${spikeData.active_count} active neurons / ${spikeData.neuron_count} total</div>
+        `
+      }
+    } catch {
+      console.warn('Simulation endpoint unavailable — using live / fallback firing')
+    }
+
     const firingEngine = createFiringEngine(ctx, {
+      spikeData,
       onLiveUpdate: (payload) => renderLiveStatus(liveStatus, payload),
       onLiveError: (message) => renderLiveError(liveStatus, message),
     })
@@ -94,7 +112,10 @@ function renderLiveStatus(el: HTMLElement, payload: LiveSimulationResponse): voi
 }
 
 function renderLiveError(el: HTMLElement, message: string): void {
-  if (!el.textContent?.includes('Live backend data')) {
+  if (
+    !el.textContent?.includes('Live backend data') &&
+    !el.textContent?.includes('Replay mode')
+  ) {
     el.classList.add('live-status-error')
     el.innerHTML = `
       <div class="live-title">Live Simulation</div>

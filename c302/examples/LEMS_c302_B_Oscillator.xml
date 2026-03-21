@@ -1,0 +1,144 @@
+<Lems>
+    
+    <!--
+
+
+Parameters and setting used to generate this network:
+
+    Data reader:                    cect.SpreadsheetDataReader
+    c302 version:                   0.11.0
+    cect version:                   0.2.6
+    owmeta version:                 - not installed -
+    owmeta_core version:            - not installed -
+    Cells:                          ['DB2', 'VB2', 'DD2', 'VD2', 'DB3', 'VB3', 'DD3', 'VD3', 'DA2', 'VA2', 'DA3', 'VA3', 'AVBL', 'AVBR']
+    Cell stimulated:                ['AVBL', 'AVBR']
+    Connection:                     []
+    Connection numbers overridden:  None
+    Connection numbers scaled:      None
+    Connection polarities override: None
+    Muscles:                        []
+
+    Known BioParameters:
+        BioParameter: chem_exc_syn_decay = 5 ms (SRC: BlindGuess, certainty 0.1)
+        BioParameter: chem_exc_syn_erev = 0mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: chem_exc_syn_rise = 3ms (SRC: BlindGuess, certainty 0.1)
+        BioParameter: chem_inh_syn_decay = 30 ms (SRC: BlindGuess, certainty 0.1)
+        BioParameter: chem_inh_syn_erev = -80mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: chem_inh_syn_rise = 3ms (SRC: BlindGuess, certainty 0.1)
+        BioParameter: muscle_iaf_C = 3pF (SRC: BlindGuess, certainty 0.1)
+        BioParameter: muscle_iaf_conductance = 0.1nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: muscle_iaf_leak_reversal = -50mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: muscle_iaf_reset = -50mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: muscle_iaf_tau1 = 50ms (SRC: BlindGuess, certainty 0.1)
+        BioParameter: muscle_iaf_thresh = -30mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_iaf_C = 3pF (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_iaf_conductance = 0.1nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_iaf_leak_reversal = -50mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_iaf_reset = -50mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_iaf_tau1 = 50ms (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_iaf_thresh = -30mV (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_to_muscle_chem_exc_syn_gbase = 0.01nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_to_muscle_chem_inh_syn_gbase = 0.01nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_to_muscle_elec_syn_gbase = 0.01 nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_to_neuron_chem_exc_syn_gbase = 0.01nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_to_neuron_chem_inh_syn_gbase = 0.01nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: neuron_to_neuron_elec_syn_gbase = 0.01 nS (SRC: BlindGuess, certainty 0.1)
+        BioParameter: unphysiological_offset_current = 4pA (SRC: Testing Osc, certainty 0)
+        BioParameter: unphysiological_offset_current_del = 100 ms (SRC: Testing Osc, certainty 0)
+        BioParameter: unphysiological_offset_current_dur = 800 ms (SRC: Testing Osc, certainty 0)
+
+   
+    -->
+
+    <Target component="sim_c302_B_Oscillator" />
+
+    <!-- Include core NeuroML2 ComponentType definitions -->
+
+    <Include file="Cells.xml" />
+    <Include file="Networks.xml" />
+    <Include file="Simulation.xml" />
+    
+    <Include file="cell_B.xml" />
+    
+    <Include file="c302_B_Oscillator.net.nml" />
+
+    <!-- End of NeuroML2 content -->
+    
+
+    <Simulation id="sim_c302_B_Oscillator" length="1000ms" step="0.05ms" target="c302_B_Oscillator">
+
+        <Display id="neurons" title="c302_B_Oscillator: Membrane potential of a number of neurons" timeScale="1ms" xmin="-100.0" xmax="1100.0" ymin="-52" ymax="-28">
+            
+            <Line id="AVBL" quantity="AVBL/0/generic_neuron_iaf_cell/v" scale="1mV" color="#e13b00" timeScale="1ms" />
+            <Line id="AVBR" quantity="AVBR/0/generic_neuron_iaf_cell/v" scale="1mV" color="#32b579" timeScale="1ms" />
+            <Line id="DA2" quantity="DA2/0/generic_neuron_iaf_cell/v" scale="1mV" color="#b1f7ed" timeScale="1ms" />
+            <Line id="DA3" quantity="DA3/0/generic_neuron_iaf_cell/v" scale="1mV" color="#3a00f9" timeScale="1ms" />
+            <Line id="DB2" quantity="DB2/0/generic_neuron_iaf_cell/v" scale="1mV" color="#232d17" timeScale="1ms" />
+            <Line id="DB3" quantity="DB3/0/generic_neuron_iaf_cell/v" scale="1mV" color="#f6b588" timeScale="1ms" />
+            <Line id="DD2" quantity="DD2/0/generic_neuron_iaf_cell/v" scale="1mV" color="#002400" timeScale="1ms" />
+            <Line id="DD3" quantity="DD3/0/generic_neuron_iaf_cell/v" scale="1mV" color="#c1551b" timeScale="1ms" />
+            <Line id="VA2" quantity="VA2/0/generic_neuron_iaf_cell/v" scale="1mV" color="#266e49" timeScale="1ms" />
+            <Line id="VA3" quantity="VA3/0/generic_neuron_iaf_cell/v" scale="1mV" color="#489ce8" timeScale="1ms" />
+            <Line id="VB2" quantity="VB2/0/generic_neuron_iaf_cell/v" scale="1mV" color="#145a8b" timeScale="1ms" />
+            <Line id="VB3" quantity="VB3/0/generic_neuron_iaf_cell/v" scale="1mV" color="#ed15c5" timeScale="1ms" />
+            <Line id="VD2" quantity="VD2/0/generic_neuron_iaf_cell/v" scale="1mV" color="#eff317" timeScale="1ms" />
+            <Line id="VD3" quantity="VD3/0/generic_neuron_iaf_cell/v" scale="1mV" color="#e0978c" timeScale="1ms" />
+            
+        </Display>
+      
+        <Display id="activity_neurons" title="c302_B_Oscillator: Activity of a number of neurons" timeScale="1ms" xmin="-100.0" xmax="1100.0" ymin="-0.1" ymax="1.1">
+            
+            <Line id="AVBL" quantity="AVBL/0/generic_neuron_iaf_cell/activity" scale="1" color="#2e112a" timeScale="1ms" />
+            <Line id="AVBR" quantity="AVBR/0/generic_neuron_iaf_cell/activity" scale="1" color="#000000" timeScale="1ms" />
+            <Line id="DA2" quantity="DA2/0/generic_neuron_iaf_cell/activity" scale="1" color="#4c2e5d" timeScale="1ms" />
+            <Line id="DA3" quantity="DA3/0/generic_neuron_iaf_cell/activity" scale="1" color="#7f21ee" timeScale="1ms" />
+            <Line id="DB2" quantity="DB2/0/generic_neuron_iaf_cell/activity" scale="1" color="#8a209a" timeScale="1ms" />
+            <Line id="DB3" quantity="DB3/0/generic_neuron_iaf_cell/activity" scale="1" color="#7f66e8" timeScale="1ms" />
+            <Line id="DD2" quantity="DD2/0/generic_neuron_iaf_cell/activity" scale="1" color="#aa49f2" timeScale="1ms" />
+            <Line id="DD3" quantity="DD3/0/generic_neuron_iaf_cell/activity" scale="1" color="#27fe53" timeScale="1ms" />
+            <Line id="VA2" quantity="VA2/0/generic_neuron_iaf_cell/activity" scale="1" color="#00b138" timeScale="1ms" />
+            <Line id="VA3" quantity="VA3/0/generic_neuron_iaf_cell/activity" scale="1" color="#14d58d" timeScale="1ms" />
+            <Line id="VB2" quantity="VB2/0/generic_neuron_iaf_cell/activity" scale="1" color="#4f994f" timeScale="1ms" />
+            <Line id="VB3" quantity="VB3/0/generic_neuron_iaf_cell/activity" scale="1" color="#b2fdae" timeScale="1ms" />
+            <Line id="VD2" quantity="VD2/0/generic_neuron_iaf_cell/activity" scale="1" color="#f157e1" timeScale="1ms" />
+            <Line id="VD3" quantity="VD3/0/generic_neuron_iaf_cell/activity" scale="1" color="#3f5fd5" timeScale="1ms" />
+
+        </Display>
+
+        <OutputFile id="neurons_v" fileName="c302_B_Oscillator.dat">
+            <OutputColumn id="AVBL_v" quantity="AVBL/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="AVBR_v" quantity="AVBR/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="DA2_v" quantity="DA2/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="DA3_v" quantity="DA3/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="DB2_v" quantity="DB2/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="DB3_v" quantity="DB3/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="DD2_v" quantity="DD2/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="DD3_v" quantity="DD3/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="VA2_v" quantity="VA2/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="VA3_v" quantity="VA3/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="VB2_v" quantity="VB2/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="VB3_v" quantity="VB3/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="VD2_v" quantity="VD2/0/generic_neuron_iaf_cell/v"/>
+            <OutputColumn id="VD3_v" quantity="VD3/0/generic_neuron_iaf_cell/v"/>
+        </OutputFile>
+        
+        <OutputFile id="neurons_activity" fileName="c302_B_Oscillator.activity.dat">
+            <OutputColumn id="AVBL_v" quantity="AVBL/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="AVBR_v" quantity="AVBR/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="DA2_v" quantity="DA2/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="DA3_v" quantity="DA3/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="DB2_v" quantity="DB2/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="DB3_v" quantity="DB3/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="DD2_v" quantity="DD2/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="DD3_v" quantity="DD3/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="VA2_v" quantity="VA2/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="VA3_v" quantity="VA3/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="VB2_v" quantity="VB2/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="VB3_v" quantity="VB3/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="VD2_v" quantity="VD2/0/generic_neuron_iaf_cell/activity"/>
+            <OutputColumn id="VD3_v" quantity="VD3/0/generic_neuron_iaf_cell/activity"/>
+        </OutputFile>
+    </Simulation>
+
+
+</Lems>

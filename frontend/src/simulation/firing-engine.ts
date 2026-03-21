@@ -2,7 +2,7 @@ import type Graph from 'graphology'
 import type { RendererContext } from '../graph/renderer'
 import { fetchLiveSimulation } from '../api'
 import { state } from '../state'
-import type { LiveSimulationResponse } from '../types'
+import type { LiveSimulationResponse, SpikeData } from '../types'
 
 const BASE_INTERVAL_MS = 50
 const LIVE_REFRESH_MS = 12_000
@@ -15,13 +15,113 @@ export interface FiringEngine {
 }
 
 export interface FiringEngineOptions {
+  /** When set with spike trains, replay dominates over live polling. */
+  spikeData?: SpikeData
   onLiveUpdate?: (payload: LiveSimulationResponse) => void
   onLiveError?: (message: string) => void
 }
 
+interface SpikeEvent {
+  time: number
+  neuron: string
+}
+
+/**
+ * Prefer replaying spike-trains from the backend; otherwise poll /api/simulation/live
+ * for firing rates and drive the visualization (with cosmetic fallback on error).
+ */
 export function createFiringEngine(
   ctx: RendererContext,
   options: FiringEngineOptions = {},
+): FiringEngine {
+  if (options.spikeData && Object.keys(options.spikeData.spike_trains).length > 0) {
+    return createReplayEngine(ctx, options.spikeData)
+  }
+  return createLivePollingEngine(ctx, options)
+}
+
+function createReplayEngine(ctx: RendererContext, data: SpikeData): FiringEngine {
+  const { graph, glowIntensities } = ctx
+
+  const events: SpikeEvent[] = []
+  for (const [neuron, times] of Object.entries(data.spike_trains)) {
+    if (!graph.hasNode(neuron)) continue
+    for (const t of times) {
+      events.push({ time: t, neuron })
+    }
+  }
+  events.sort((a, b) => a.time - b.time)
+
+  const duration = data.duration_ms
+  let cursor = 0
+  let eventIdx = 0
+  let lastWall = 0
+  let rafId: number | null = null
+
+  function tick(now: number): void {
+    const wallDt = lastWall ? now - lastWall : 16.67
+    lastWall = now
+
+    const simDt = wallDt * state.timescale
+    const prevCursor = cursor
+    cursor += simDt
+
+    if (cursor >= duration) {
+      cursor %= duration
+      eventIdx = 0
+    }
+
+    const lo = prevCursor
+    const hi = cursor
+
+    if (lo <= hi) {
+      while (eventIdx < events.length && events[eventIdx].time < hi) {
+        if (events[eventIdx].time >= lo) {
+          fire(events[eventIdx].neuron)
+        }
+        eventIdx++
+      }
+    } else {
+      while (eventIdx < events.length) {
+        fire(events[eventIdx].neuron)
+        eventIdx++
+      }
+      eventIdx = 0
+      while (eventIdx < events.length && events[eventIdx].time < hi) {
+        fire(events[eventIdx].neuron)
+        eventIdx++
+      }
+    }
+
+    rafId = requestAnimationFrame(tick)
+  }
+
+  function fire(neuron: string): void {
+    glowIntensities.set(neuron, 1.0)
+    graph.forEachOutNeighbor(neuron, (neighbor) => {
+      const current = glowIntensities.get(neighbor) || 0
+      glowIntensities.set(neighbor, Math.min(1.0, current + 0.25))
+    })
+  }
+
+  return {
+    start() {
+      if (rafId !== null) return
+      lastWall = 0
+      rafId = requestAnimationFrame(tick)
+    },
+    stop() {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+    },
+  }
+}
+
+function createLivePollingEngine(
+  ctx: RendererContext,
+  options: FiringEngineOptions,
 ): FiringEngine {
   const { graph, glowIntensities } = ctx
   let timer: ReturnType<typeof setInterval> | null = null
@@ -80,10 +180,7 @@ export function createFiringEngine(
       const baseProb = fireProbabilities.get(nodeId) ?? 0
       const prob = Math.min(MAX_STEP_FIRE_PROBABILITY, baseProb * state.timescale)
       if (Math.random() < prob) {
-        // Fire this neuron
         glowIntensities.set(nodeId, 1.0)
-
-        // Cascade: boost direct neighbors
         cascadeToNeighbors(graph, glowIntensities, nodeId)
       }
     }
@@ -103,7 +200,6 @@ export function createFiringEngine(
 
     timer = setInterval(tick, getInterval())
 
-    // Re-create interval when timescale changes so tick rate adapts
     timescaleWatcher = setInterval(() => {
       if (timer === null) {
         if (timescaleWatcher !== null) {

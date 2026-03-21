@@ -1,0 +1,56 @@
+{
+    "IClamp_GenericMuscleCell": {
+        "version": "NeuroMLlite v0.6.1",
+        "notes": "A network model: IClamp_GenericMuscleCell",
+        "parameters": {
+            "stim_amp": "4pA",
+            "stim_delay": "500ms",
+            "stim_duration": "2000ms"
+        },
+        "cells": {
+            "GenericMuscleCell": {
+                "neuroml2_source_file": "GenericMuscleCell.cell.nml"
+            }
+        },
+        "input_sources": {
+            "iclamp_0": {
+                "parameters": {
+                    "amplitude": "stim_amp",
+                    "delay": "stim_delay",
+                    "duration": "stim_duration"
+                },
+                "neuroml2_input": "PulseGenerator"
+            }
+        },
+        "regions": {
+            "Worm": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+                "width": 1000.0,
+                "height": 100.0,
+                "depth": 1000.0
+            }
+        },
+        "populations": {
+            "pop_GenericMuscleCell": {
+                "size": 1,
+                "component": "GenericMuscleCell",
+                "properties": {
+                    "color": "0.8 0 0"
+                },
+                "random_layout": {
+                    "region": "Worm"
+                }
+            }
+        },
+        "inputs": {
+            "Stim_iclamp_0": {
+                "input_source": "iclamp_0",
+                "population": "pop_GenericMuscleCell",
+                "percentage": 100
+            }
+        },
+        "temperature": 34.0
+    }
+}

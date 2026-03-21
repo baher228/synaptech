@@ -22,6 +22,13 @@ export interface GraphData {
   edges: GraphEdge[]
 }
 
+export interface SpikeData {
+  duration_ms: number
+  spike_trains: Record<string, number[]>
+  neuron_count: number
+  active_count: number
+}
+
 export interface AppState {
   timescale: number
   selectedNeuron: string | null

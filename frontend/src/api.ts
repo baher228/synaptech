@@ -1,4 +1,4 @@
-import type { GraphData, LiveSimulationResponse } from './types'
+import type { GraphData, LiveSimulationResponse, SpikeData } from './types'
 
 export async function fetchGraphData(): Promise<GraphData> {
   const response = await fetch('/api/connectome/graph')
@@ -28,4 +28,12 @@ export async function fetchLiveSimulation(
     throw new Error(`Failed to fetch live simulation: ${response.status}`)
   }
   return response.json() as Promise<LiveSimulationResponse>
+}
+
+export async function fetchSpikeTrains(): Promise<SpikeData> {
+  const response = await fetch('/api/simulation/spikes')
+  if (!response.ok) {
+    throw new Error(`Failed to fetch spikes: ${response.status}`)
+  }
+  return response.json() as Promise<SpikeData>
 }

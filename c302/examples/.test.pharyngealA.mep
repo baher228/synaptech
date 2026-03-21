@@ -1,0 +1,6 @@
+system: Testing a single cell's activity in the pharyngeal network
+
+experiments:
+    TestOneCell:
+        expected:
+            spike times: [109.78999999999999, 129.20999999999998, 138.14000000000001, 159.34, 193.57, 203.09, 215.35000000000002, 240.39]
