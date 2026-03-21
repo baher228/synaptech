@@ -61,6 +61,22 @@ NON_NEURON_MOTOR_CELLS = {
     "mu_sph",
 }
 
+
+def _gabaergic_neuron_set() -> set[str]:
+    """Known GABAergic (inhibitory) neurons in C. elegans.
+
+    Sources: McIntire et al. 1993, WormAtlas.  Conservative subset covering
+    RME head motor neurons, RIS interneuron, AVL/DVB defecation circuit,
+    DD01-DD06 dorsal D-type motor neurons, VD01-VD13 ventral D-type motor neurons.
+    """
+    names = {"AVL", "DVB", "RMEV", "RMED", "RMEL", "RMER", "RIS"}
+    names.update({f"DD{idx:02d}" for idx in range(1, 7)})
+    names.update({f"VD{idx:02d}" for idx in range(1, 14)})
+    return names
+
+
+GABAERGIC_NEURONS: set[str] = _gabaergic_neuron_set()
+
 BODY_PREFIXES = (
     "DA",
     "DB",
@@ -234,6 +250,7 @@ def build_connectome_graph() -> nx.DiGraph:
             type=_neuron_type(node),
             name=node.name,
             region=_neuron_region(node.name),
+            neurotransmitter="GABA" if node.name in GABAERGIC_NEURONS else "ACh",
             source_type=node.node_type,
             source_subtype=node.node_subtype,
             pos_x=pos_x,

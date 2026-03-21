@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 import networkx as nx
 import numpy as np
 
+from app.connectome import GABAERGIC_NEURONS
+
 
 @dataclass
 class NumpyLIFEngine:
@@ -46,8 +48,18 @@ class NumpyLIFEngine:
     _W_chem: np.ndarray = field(default_factory=lambda: np.array([]))
     _W_gap: np.ndarray = field(default_factory=lambda: np.array([]))
 
-    # Excitatory (+1) or inhibitory (-1) per neuron — simplified: all +1 for now
+    # Excitatory (+1) or inhibitory (-1) per neuron (Dale's law)
     _sign: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    # Synaptic dynamics (double-exponential conductance filter)
+    tau_rise: float = 3.0     # ms — neurotransmitter binding / channel opening
+    tau_decay: float = 10.0   # ms — neurotransmitter unbinding / channel closing
+    _g_syn: np.ndarray = field(default_factory=lambda: np.array([]))  # conductance state
+    _s_syn: np.ndarray = field(default_factory=lambda: np.array([]))  # rise variable
+
+    # Synaptic delay buffer (circular queue of signed spike vectors)
+    syn_delay_ms: float = 0.5  # axonal propagation delay
+    _spike_buffer: list[np.ndarray] = field(default_factory=list)
 
     # Recording buffers (filled during run())
     _spike_trains: dict[str, list[float]] = field(default_factory=dict)
@@ -90,7 +102,16 @@ class NumpyLIFEngine:
             if gw:
                 self._W_gap[i, j] += gw * self.w_gap_scale
 
-        self._sign = np.ones(self._n)
+        self._sign = np.array([
+            -1.0 if name in GABAERGIC_NEURONS else 1.0
+            for name in self._neuron_names
+        ])
+
+        self._g_syn = np.zeros(self._n)
+        self._s_syn = np.zeros(self._n)
+
+        delay_steps = max(1, int(self.syn_delay_ms / self.dt))
+        self._spike_buffer = [np.zeros(self._n) for _ in range(delay_steps)]
 
         self._spike_trains = {name: [] for name in self._neuron_names}
         self._voltage_traces = {name: [] for name in self._neuron_names}
@@ -150,6 +171,9 @@ class NumpyLIFEngine:
     def reset(self) -> None:
         self._V[:] = self.v_rest
         self._refractory_remaining[:] = 0.0
+        self._g_syn[:] = 0.0
+        self._s_syn[:] = 0.0
+        self._spike_buffer = [np.zeros(self._n) for _ in range(len(self._spike_buffer))]
         self._spike_trains = {name: [] for name in self._neuron_names}
         self._voltage_traces = {name: [] for name in self._neuron_names}
         self._sim_time = 0.0
@@ -172,18 +196,31 @@ class NumpyLIFEngine:
         # I_gap_i = sum_j W_gap[j,i] * (V[j] - V[i])
         I_gap = self._W_gap.T @ V - np.sum(self._W_gap, axis=0) * V
 
-        # --- membrane integration ---
+        # --- evolve synaptic conductance (double-exponential filter) ---
+        # g decays toward zero but is driven by s; s decays independently.
+        # On presynaptic spike, s receives an impulse (below).
+        self._g_syn += (-self._g_syn + self._s_syn) / self.tau_decay * self.dt
+        self._s_syn += (-self._s_syn / self.tau_rise) * self.dt
+
+        # --- membrane integration (includes ongoing synaptic current) ---
         not_refractory = self._refractory_remaining <= 0
-        dV = (-(V - self.v_rest) / self.tau + I_ext + I_gap) * self.dt
+        dV = (-(V - self.v_rest) / self.tau + I_ext + I_gap + self._g_syn) * self.dt
         V += dV * active * not_refractory
 
         # --- spike detection ---
         spiked = (V >= self.v_thresh) & active & not_refractory
 
-        # --- synaptic current from spikes (delivered next conceptual step) ---
-        if np.any(spiked):
-            spike_input = self._W_chem.T @ (spiked.astype(float) * self._sign)
-            V += spike_input * active * not_refractory
+        # --- push current spikes into delay buffer, pop delayed spikes ---
+        self._spike_buffer.append(spiked.astype(float) * self._sign)
+        delayed_spikes = self._spike_buffer.pop(0)
+
+        # --- deliver delayed spike impulses to synaptic rise variable ---
+        # Normalise so total integrated PSP ≈ original instantaneous weight.
+        # The double-exponential kernel integrates to tau_r*tau_d/(tau_d-tau_r).
+        syn_norm = self.tau_rise * self.tau_decay / (self.tau_decay - self.tau_rise)
+        if np.any(delayed_spikes):
+            spike_input = self._W_chem.T @ delayed_spikes
+            self._s_syn += spike_input / syn_norm
 
         # --- reset spiked neurons ---
         V[spiked] = self.v_reset
