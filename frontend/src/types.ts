@@ -7,6 +7,10 @@ export interface GraphNode {
   pos_y: number
   in_degree: number
   out_degree: number
+  is_replacement?: boolean
+  is_ghosted?: boolean
+  replacement_for?: string | null
+  replaced_by?: string | null
 }
 
 export interface GraphEdge {
@@ -33,6 +37,9 @@ export interface AppState {
   timescale: number
   selectedNeuron: string | null
   hoveredNeuron: string | null
+  activeFaultyNeuron: string | null
+  activeReplacementNeuron: string | null
+  replacementStatus: 'in_progress' | 'completed' | null
 }
 
 export interface LiveFiringSummary {
@@ -54,4 +61,25 @@ export interface LiveSimulationResponse {
   firing_summary_hz: LiveFiringSummary
   firing_rates_hz_by_node: Record<string, number>
   top_firing_neurons: TopFiringNeuron[]
+}
+
+export interface ReplacementEdgeMigration {
+  migration_id: string
+  old_source: string
+  old_target: string
+  new_source: string
+  new_target: string
+  chemical_weight: number
+  gap_weight: number
+}
+
+export interface ReplacementSession {
+  session_id: string
+  faulty_neuron: string
+  replacement_neuron: string
+  status: 'in_progress' | 'completed'
+  pending_count: number
+  completed_count: number
+  next_edge: ReplacementEdgeMigration | null
+  completed_edges: ReplacementEdgeMigration[]
 }

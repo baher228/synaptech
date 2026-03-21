@@ -97,6 +97,7 @@ function createReplayEngine(ctx: RendererContext, data: SpikeData): FiringEngine
   }
 
   function fire(neuron: string): void {
+    if (!graph.hasNode(neuron)) return
     glowIntensities.set(neuron, 1.0)
     graph.forEachOutNeighbor(neuron, (neighbor) => {
       const current = glowIntensities.get(neighbor) || 0
@@ -127,21 +128,20 @@ function createLivePollingEngine(
   let timer: ReturnType<typeof setInterval> | null = null
   let refreshTimer: ReturnType<typeof setInterval> | null = null
   let timescaleWatcher: ReturnType<typeof setInterval> | null = null
-  const nodeIds = graph.nodes()
   let isFetchingLive = false
   let hasLiveData = false
 
   const fireProbabilities = new Map<string, number>()
 
   function setFallbackProbabilities(): void {
-    for (const nodeId of nodeIds) {
+    for (const nodeId of graph.nodes()) {
       const centrality = (graph.getNodeAttribute(nodeId, 'baseSize') - 3) / 18
       fireProbabilities.set(nodeId, BASE_FIRE_PROBABILITY * (0.2 + 0.8 * centrality))
     }
   }
 
   function setProbabilitiesFromLiveRates(ratesHzByNode: Record<string, number>): void {
-    for (const nodeId of nodeIds) {
+    for (const nodeId of graph.nodes()) {
       const hz = ratesHzByNode[nodeId] ?? 0
       const probability = Math.min(
         MAX_STEP_FIRE_PROBABILITY,
@@ -176,7 +176,7 @@ function createLivePollingEngine(
   }
 
   function tick(): void {
-    for (const nodeId of nodeIds) {
+    for (const nodeId of graph.nodes()) {
       const baseProb = fireProbabilities.get(nodeId) ?? 0
       const prob = Math.min(MAX_STEP_FIRE_PROBABILITY, baseProb * state.timescale)
       if (Math.random() < prob) {
@@ -236,6 +236,7 @@ function cascadeToNeighbors(
   glowIntensities: Map<string, number>,
   sourceId: string,
 ): void {
+  if (!graph.hasNode(sourceId)) return
   graph.forEachOutNeighbor(sourceId, (neighbor) => {
     const current = glowIntensities.get(neighbor) || 0
     glowIntensities.set(neighbor, Math.min(1.0, current + 0.25))

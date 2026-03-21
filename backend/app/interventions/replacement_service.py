@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import random as stdlib_random
 
 import networkx as nx
@@ -98,6 +99,14 @@ class ReplacementService:
         replacement_attrs["replacement_for"] = faulty_neuron
         replacement_attrs["is_ghosted"] = False
         replacement_attrs["name"] = replacement_neuron
+        replacement_index = max(0, self._replacement_counter - 1)
+        replacement_pos_x, replacement_pos_y = self._offset_replacement_position(
+            base_x=float(attrs.get("pos_x", 0.0)),
+            base_y=float(attrs.get("pos_y", 0.0)),
+            replacement_index=replacement_index,
+        )
+        replacement_attrs["pos_x"] = replacement_pos_x
+        replacement_attrs["pos_y"] = replacement_pos_y
         self.graph.add_node(replacement_neuron, **replacement_attrs)
 
         migrations = self._build_edge_migrations(
@@ -157,6 +166,20 @@ class ReplacementService:
         self._replacement_counter += 1
         return name
 
+    def _offset_replacement_position(
+        self,
+        base_x: float,
+        base_y: float,
+        replacement_index: int,
+    ) -> tuple[float, float]:
+        # Golden-angle fan-out keeps multiple replacements visually separated.
+        angle = replacement_index * 2.399963229728653
+        radius = 2.4 + 0.5 * (replacement_index % 3)
+        return (
+            base_x + radius * math.cos(angle),
+            base_y + radius * math.sin(angle),
+        )
+
     def _build_edge_migrations(
         self,
         faulty_neuron: str,
@@ -215,6 +238,15 @@ class ReplacementService:
     def _ghost_faulty_neuron(self, faulty_neuron: str, replacement_neuron: str) -> None:
         if faulty_neuron not in self.graph:
             return
+        if replacement_neuron in self.graph:
+            # Once migration is complete, snap the replacement neuron onto the
+            # original neuron's position so it fully takes over in the UI.
+            self.graph.nodes[replacement_neuron]["pos_x"] = float(
+                self.graph.nodes[faulty_neuron].get("pos_x", 0.0)
+            )
+            self.graph.nodes[replacement_neuron]["pos_y"] = float(
+                self.graph.nodes[faulty_neuron].get("pos_y", 0.0)
+            )
         self.graph.nodes[faulty_neuron]["is_ghosted"] = True
         self.graph.nodes[faulty_neuron]["is_active"] = False
         self.graph.nodes[faulty_neuron]["replaced_by"] = replacement_neuron

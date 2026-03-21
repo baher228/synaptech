@@ -332,6 +332,10 @@ def graph_to_data(graph: nx.DiGraph) -> dict[str, object]:
             "pos_y": attrs["pos_y"],
             "in_degree": graph.in_degree(node_id),
             "out_degree": graph.out_degree(node_id),
+            "is_replacement": bool(attrs.get("is_replacement", False)),
+            "is_ghosted": bool(attrs.get("is_ghosted", False)),
+            "replacement_for": attrs.get("replacement_for"),
+            "replaced_by": attrs.get("replaced_by"),
         })
     edges = []
     for src, tgt, attrs in graph.edges(data=True):

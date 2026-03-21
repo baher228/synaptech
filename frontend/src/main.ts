@@ -1,6 +1,6 @@
 import './style.css'
 
-import { fetchGraphData, fetchSpikeTrains } from './api'
+import { fetchGraphData, fetchReplacementGraph, fetchSpikeTrains } from './api'
 import { createRenderer } from './graph/renderer'
 import { setupInteractions } from './graph/interactions'
 import { createFiringEngine } from './simulation/firing-engine'
@@ -8,6 +8,7 @@ import { createAnimationLoop } from './simulation/animation-loop'
 import { createTimescaleControl } from './ui/timescale-control'
 import { createNeuronTooltip } from './ui/neuron-tooltip'
 import { createLegend } from './ui/legend'
+import { createReplacementControl } from './ui/replacement-control'
 import type { LiveSimulationResponse, SpikeData } from './types'
 
 async function boot(): Promise<void> {
@@ -28,7 +29,12 @@ async function boot(): Promise<void> {
   document.body.appendChild(loading)
 
   try {
-    const data = await fetchGraphData()
+    let data
+    try {
+      data = await fetchReplacementGraph()
+    } catch {
+      data = await fetchGraphData()
+    }
 
     // Build graph renderer
     const ctx = createRenderer(graphContainer, data)
@@ -83,6 +89,7 @@ async function boot(): Promise<void> {
 
     createLegend(uiOverlay)
     createTimescaleControl(uiOverlay)
+    createReplacementControl(uiOverlay, ctx)
     createNeuronTooltip(uiOverlay, ctx)
 
     // Remove loading

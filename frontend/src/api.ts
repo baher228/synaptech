@@ -1,4 +1,9 @@
-import type { GraphData, LiveSimulationResponse, SpikeData } from './types'
+import type {
+  GraphData,
+  LiveSimulationResponse,
+  ReplacementSession,
+  SpikeData,
+} from './types'
 
 export async function fetchGraphData(): Promise<GraphData> {
   const response = await fetch('/api/connectome/graph')
@@ -36,4 +41,76 @@ export async function fetchSpikeTrains(): Promise<SpikeData> {
     throw new Error(`Failed to fetch spikes: ${response.status}`)
   }
   return response.json() as Promise<SpikeData>
+}
+
+export async function fetchReplacementGraph(): Promise<GraphData> {
+  const response = await fetch('/api/replacement/graph')
+  if (!response.ok) {
+    throw new Error(`Failed to fetch replacement graph: ${response.status}`)
+  }
+  return response.json() as Promise<GraphData>
+}
+
+export async function fetchRandomFaultyNeurons(
+  count = 1,
+  seed?: number,
+): Promise<string[]> {
+  const search = new URLSearchParams()
+  search.set('count', String(count))
+  if (seed !== undefined) {
+    search.set('seed', String(seed))
+  }
+  const response = await fetch(`/api/replacement/faulty/random?${search.toString()}`)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch faulty neurons: ${response.status}`)
+  }
+  const payload = (await response.json()) as { neurons: string[] }
+  return payload.neurons
+}
+
+export async function startReplacement(input: {
+  faultyNeuron?: string
+  edgeOrder?: 'random' | 'deterministic'
+  seed?: number
+}): Promise<ReplacementSession> {
+  const response = await fetch('/api/replacement/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      faulty_neuron: input.faultyNeuron ?? null,
+      edge_order: input.edgeOrder ?? 'random',
+      seed: input.seed ?? null,
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to start replacement: ${response.status}`)
+  }
+  const payload = (await response.json()) as { session: ReplacementSession }
+  return payload.session
+}
+
+export async function stepReplacement(
+  sessionId: string,
+  edgesToMigrate = 1,
+): Promise<ReplacementSession> {
+  const response = await fetch('/api/replacement/step', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      edges_to_migrate: edgesToMigrate,
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to step replacement: ${response.status}`)
+  }
+  const payload = (await response.json()) as { session: ReplacementSession }
+  return payload.session
+}
+
+export async function resetReplacement(): Promise<void> {
+  const response = await fetch('/api/replacement/reset', { method: 'POST' })
+  if (!response.ok) {
+    throw new Error(`Failed to reset replacement graph: ${response.status}`)
+  }
 }

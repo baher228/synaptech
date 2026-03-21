@@ -8,6 +8,9 @@ export const state: AppState = {
   timescale: 1,
   selectedNeuron: null,
   hoveredNeuron: null,
+  activeFaultyNeuron: null,
+  activeReplacementNeuron: null,
+  replacementStatus: null,
 }
 
 export function on(event: string, fn: Listener): () => void {
