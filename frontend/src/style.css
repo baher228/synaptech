@@ -1,0 +1,105 @@
+:root {
+  --bg: #0b132b;
+  --bg-soft: #1c2541;
+  --card: #f8f9fb;
+  --text: #0b132b;
+  --text-soft: #3a506b;
+  --accent: #ff7a59;
+  --accent-hover: #e55f3d;
+  --border: #d9deea;
+  --mono: 'JetBrains Mono', 'Consolas', monospace;
+  --sans: 'Space Grotesk', 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--sans);
+  color: var(--text);
+  background:
+    radial-gradient(circle at 15% 15%, #4b6587 0%, transparent 36%),
+    radial-gradient(circle at 80% 0%, #ff7a5955 0%, transparent 26%),
+    linear-gradient(150deg, var(--bg), var(--bg-soft));
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+}
+
+.shell {
+  width: min(760px, 100%);
+  background: var(--card);
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  padding: 1.5rem;
+  box-shadow: 0 24px 60px rgba(5, 15, 40, 0.35);
+}
+
+.hero h1 {
+  margin: 0.3rem 0;
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+}
+
+.eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-soft);
+}
+
+.subtext {
+  margin-top: 0;
+  color: var(--text-soft);
+}
+
+button {
+  border: 0;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+button:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.panel {
+  margin-top: 1rem;
+}
+
+.panel h2 {
+  margin-bottom: 0.5rem;
+  font-size: 1.05rem;
+}
+
+pre {
+  margin: 0;
+  min-height: 160px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  padding: 1rem;
+  border-radius: 14px;
+  background: #0f172a;
+  color: #d6e0ff;
+  font-family: var(--mono);
+  line-height: 1.45;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    padding: 1rem;
+    border-radius: 14px;
+  }
+}
