@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.connectome import get_connectome_summary
+from app.simulation import run_live_activity
 
 app = FastAPI(title="Synaptech API", version="0.1.0")
 
@@ -27,3 +28,16 @@ def read_message() -> dict[str, str]:
 @app.get("/api/connectome/summary")
 def connectome_summary() -> dict[str, object]:
     return get_connectome_summary()
+
+
+@app.get("/api/simulation/live")
+def live_simulation(
+    duration_ms: float = Query(default=2_000.0, ge=100.0, le=30_000.0),
+    burn_in_ms: float = Query(default=500.0, ge=0.0, le=30_000.0),
+    seed: int | None = Query(default=7),
+) -> dict[str, object]:
+    return run_live_activity(
+        duration_ms=duration_ms,
+        burn_in_ms=burn_in_ms,
+        seed=seed,
+    )
