@@ -1,41 +1,33 @@
 """Experiment sweep orchestration.
 
-Runs a combinatorial grid of (fraction x strategy x trial), collecting
+Runs a combinatorial grid of (fraction x trial), collecting
 failure scores and per-run metrics into a structured result set.
 """
 
 from __future__ import annotations
 
 import random as stdlib_random
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 import networkx as nx
 
+from app.interventions.fault_detection import FaultDetectionService
+from app.interventions.replacement_service import ReplacementService
+from app.metrics.metrics import compute_baseline, failure_score
 from app.simulation.factory import get_engine
-from app.metrics.metrics import (
-    compute_baseline,
-    failure_score,
-    BaselineFingerprint,
-)
-from app.interventions.strategies import (
-    Strategy,
-    select_neurons,
-    apply_dropout,
-    apply_replacement,
-    apply_graceful_fade,
-)
 
-Intervention = Literal["dropout", "replacement", "graceful"]
+Intervention = Literal["dropout", "replacement"]
 
 
 @dataclass
 class SweepResult:
     fraction: float
-    strategy: str
+    target_selector: str
     intervention: str
     trial: int
     failure: float
+    targeted_neurons: list[str]
     baseline: dict
     post: dict
 
@@ -50,10 +42,29 @@ def _neuron_groups(graph: nx.DiGraph) -> tuple[list[str], list[str]]:
     return sensory, motor
 
 
+def _replace_targets_in_graph(
+    graph: nx.DiGraph,
+    targets: list[str],
+    rng: stdlib_random.Random,
+) -> nx.DiGraph:
+    service = ReplacementService(graph)
+    for target in targets:
+        session = service.start_replacement(
+            faulty_neuron=target,
+            edge_order="random",
+            seed=rng.randint(0, 10**9),
+        )
+        while session.status != "completed":
+            session = service.step_replacement(
+                session.session_id,
+                edges_to_migrate=max(1, min(100, len(session.pending))),
+            )
+    return service.graph
+
+
 def run_sweep(
     graph: nx.DiGraph,
     fractions: list[float],
-    strategies: list[Strategy],
     intervention: Intervention = "dropout",
     n_trials: int = 3,
     engine_name: str = "brian2",
@@ -62,60 +73,65 @@ def run_sweep(
     duration_ms: float = 5000.0,
     seed: int | None = None,
 ) -> list[SweepResult]:
-    """Run the full replacement-sweep experimental protocol.
+    """Run sweep protocol for random-faulty target selection.
 
-    For each (fraction, strategy, trial):
+    For each (fraction, trial):
       1. Build a fresh simulation from the graph.
       2. Burn in, then capture baseline metrics.
-      3. Apply the intervention.
-      4. Run post-intervention, capture metrics.
+      3. Apply intervention.
+      4. Run post-intervention capture.
       5. Compute failure score.
     """
     rng = stdlib_random.Random(seed)
+    detector = FaultDetectionService()
     sensory, motor = _neuron_groups(graph)
     results: list[SweepResult] = []
 
     for frac in fractions:
-        for strat in strategies:
-            for trial in range(n_trials):
-                engine = get_engine(engine_name)
-                engine.build(graph, neuron_model=neuron_model)
+        for trial in range(n_trials):
+            engine = get_engine(engine_name)
+            engine.build(graph, neuron_model=neuron_model)
 
-                # Burn-in
-                engine.run(burn_in_ms)
+            # Baseline capture
+            engine.run(burn_in_ms)
+            engine.run(duration_ms)
+            bl_trains = engine.get_spike_trains()
+            baseline = compute_baseline(bl_trains, duration_ms, sensory, motor)
 
-                # Baseline capture
-                engine.run(duration_ms)
-                bl_trains = engine.get_spike_trains()
-                bl = compute_baseline(bl_trains, duration_ms, sensory, motor)
+            targets = detector.select_targets_by_fraction(
+                graph=graph,
+                fraction=frac,
+                seed=rng.randint(0, 10**9),
+            )
 
-                # Intervention
-                targets = select_neurons(graph, frac, strat, rng=rng)
-
-                if intervention == "dropout":
-                    apply_dropout(engine, targets)
-                elif intervention == "replacement":
-                    apply_replacement(engine, graph, targets, rng=rng)
-                elif intervention == "graceful":
-                    apply_graceful_fade(engine, graph, targets)
-                else:
-                    raise ValueError(f"Unknown intervention '{intervention}'")
-
-                # Post-intervention capture
+            if intervention == "dropout":
+                engine.silence_neurons(targets)
                 engine.run(duration_ms)
                 post_trains = engine.get_spike_trains()
-                post = compute_baseline(post_trains, duration_ms, sensory, motor)
+            elif intervention == "replacement":
+                replaced_graph = _replace_targets_in_graph(graph, targets, rng)
+                post_engine = get_engine(engine_name)
+                post_engine.build(replaced_graph, neuron_model=neuron_model)
+                post_engine.run(burn_in_ms)
+                post_engine.run(duration_ms)
+                post_trains = post_engine.get_spike_trains()
+            else:
+                raise ValueError(f"Unknown intervention '{intervention}'")
 
-                score = failure_score(bl, post)
+            post = compute_baseline(post_trains, duration_ms, sensory, motor)
+            score = failure_score(baseline, post)
 
-                results.append(SweepResult(
+            results.append(
+                SweepResult(
                     fraction=frac,
-                    strategy=strat,
+                    target_selector="random_faulty",
                     intervention=intervention,
                     trial=trial,
                     failure=score,
-                    baseline=bl.to_dict(),
+                    targeted_neurons=targets,
+                    baseline=baseline.to_dict(),
                     post=post.to_dict(),
-                ))
+                )
+            )
 
     return results

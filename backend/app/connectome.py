@@ -303,8 +303,7 @@ def get_connectome_graph() -> nx.DiGraph:
     return _cached_connectome_graph().copy()
 
 
-def get_connectome_graph_data() -> dict[str, object]:
-    graph = _cached_connectome_graph()
+def graph_to_data(graph: nx.DiGraph) -> dict[str, object]:
     nodes = []
     for node_id, attrs in graph.nodes(data=True):
         nodes.append({
@@ -327,6 +326,10 @@ def get_connectome_graph_data() -> dict[str, object]:
             "weight": attrs["weight"],
         })
     return {"nodes": nodes, "edges": edges}
+
+
+def get_connectome_graph_data() -> dict[str, object]:
+    return graph_to_data(_cached_connectome_graph())
 
 
 def get_connectome_summary() -> dict[str, object]:
