@@ -1,0 +1,317 @@
+from __future__ import annotations
+
+import csv
+from collections import Counter
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+import networkx as nx
+
+DATA_ROOT = Path(__file__).resolve().parents[1] / "data" / "roundworm"
+CHEMICAL_NODES_PATH = DATA_ROOT / "chemical_synapse.csv" / "nodes.csv"
+CHEMICAL_EDGES_PATH = DATA_ROOT / "chemical_synapse.csv" / "edges.csv"
+GAP_NODES_PATH = DATA_ROOT / "gap_junction_synapse.csv" / "nodes.csv"
+GAP_EDGES_PATH = DATA_ROOT / "gap_junction_synapse.csv" / "edges.csv"
+
+CANONICAL_NODE_COUNT = 302
+
+PHARYNGEAL_NEURONS = {
+    "I1L",
+    "I1R",
+    "I2L",
+    "I2R",
+    "I3",
+    "I4",
+    "I5",
+    "I6",
+    "M1",
+    "M2L",
+    "M2R",
+    "M3L",
+    "M3R",
+    "M4",
+    "M5",
+    "MCL",
+    "MCR",
+    "MI",
+    "NSML",
+    "NSMR",
+}
+
+NON_NEURON_MOTOR_CELLS = {
+    "CEPshDL",
+    "CEPshDR",
+    "CEPshVL",
+    "CEPshVR",
+    "GLRDL",
+    "GLRDR",
+    "GLRL",
+    "GLRR",
+    "GLRVL",
+    "GLRVR",
+    "exc_gl",
+    "exc_cell",
+    "hmc",
+    "hyp",
+    "mu_intL",
+    "mu_intR",
+    "mu_anal",
+    "mu_sph",
+}
+
+BODY_PREFIXES = (
+    "DA",
+    "DB",
+    "DD",
+    "VA",
+    "VB",
+    "VD",
+    "AS",
+)
+
+BODY_EXACT = {
+    "PDA",
+    "PDB",
+    "DVA",
+    "DVB",
+    "DVC",
+    "CANL",
+    "CANR",
+    "HSNL",
+    "HSNR",
+}
+
+TAIL_PREFIXES = (
+    "PHA",
+    "PHB",
+    "PHC",
+    "PLM",
+    "PLN",
+    "PVN",
+    "PVW",
+    "PQR",
+    "LUA",
+)
+
+
+@dataclass(frozen=True)
+class NodeRecord:
+    index: int
+    node_type: str
+    node_subtype: str
+    name: str
+
+
+def _iter_csv_rows(path: Path) -> list[list[str]]:
+    rows: list[list[str]] = []
+    with path.open(newline="", encoding="utf-8") as file_handle:
+        for line in file_handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            rows.append([column.strip() for column in next(csv.reader([stripped]))])
+    return rows
+
+
+def _read_nodes(path: Path) -> dict[int, NodeRecord]:
+    nodes: dict[int, NodeRecord] = {}
+    for row in _iter_csv_rows(path):
+        index, node_type, node_subtype, name, _ = row
+        node = NodeRecord(
+            index=int(index),
+            node_type=node_type,
+            node_subtype=node_subtype,
+            name=name,
+        )
+        nodes[node.index] = node
+    return nodes
+
+
+def _read_edges(path: Path) -> list[tuple[int, int, int]]:
+    edges: list[tuple[int, int, int]] = []
+    for row in _iter_csv_rows(path):
+        source, target, synapses = row
+        edges.append((int(source), int(target), int(synapses)))
+    return edges
+
+
+def _is_canonical_neuron(node: NodeRecord) -> bool:
+    if node.node_type in {"SENSORY NEURONS", "INTERNEURONS"}:
+        return True
+    if node.node_type == "MOTOR NEURONS":
+        return (
+            node.node_subtype != "BODYWALL MUSCLES"
+            and node.name not in NON_NEURON_MOTOR_CELLS
+        )
+    if node.node_type == "SEX-SPECIFIC CELLS":
+        return node.node_subtype == "MOTOR NEURONS"
+    if node.node_type == "PHARYNX":
+        return node.name in PHARYNGEAL_NEURONS
+    return False
+
+
+def _neuron_type(node: NodeRecord) -> str:
+    if node.node_type == "SENSORY NEURONS":
+        return "S"
+    if node.node_type == "INTERNEURONS":
+        return "I"
+    if node.node_type in {"MOTOR NEURONS", "SEX-SPECIFIC CELLS"}:
+        return "M"
+    if node.name.startswith("I") or node.name == "MI":
+        return "I"
+    if node.name.startswith("NSM"):
+        return "S"
+    return "M"
+
+
+def _neuron_region(name: str) -> str:
+    if name in BODY_EXACT or name.startswith("VC") or name.startswith(BODY_PREFIXES):
+        return "body"
+    if name.startswith(TAIL_PREFIXES):
+        return "tail"
+    return "head"
+
+
+def _upsert_edge(
+    graph: nx.DiGraph,
+    source: str,
+    target: str,
+    chemical_weight: int = 0,
+    gap_weight: int = 0,
+) -> None:
+    if not graph.has_edge(source, target):
+        graph.add_edge(
+            source,
+            target,
+            chemical_weight=0,
+            gap_weight=0,
+            weight=0,
+        )
+
+    edge_payload = graph[source][target]
+    edge_payload["chemical_weight"] += chemical_weight
+    edge_payload["gap_weight"] += gap_weight
+    edge_payload["weight"] = edge_payload["chemical_weight"] + edge_payload["gap_weight"]
+
+
+def build_connectome_graph() -> nx.DiGraph:
+    chemical_nodes = _read_nodes(CHEMICAL_NODES_PATH)
+    gap_nodes = _read_nodes(GAP_NODES_PATH)
+    chemical_edges = _read_edges(CHEMICAL_EDGES_PATH)
+    gap_edges = _read_edges(GAP_EDGES_PATH)
+
+    canonical_nodes = {
+        node.index: node
+        for node in chemical_nodes.values()
+        if _is_canonical_neuron(node)
+    }
+    if len(canonical_nodes) != CANONICAL_NODE_COUNT:
+        raise ValueError(
+            f"Expected {CANONICAL_NODE_COUNT} canonical neurons, got {len(canonical_nodes)}."
+        )
+
+    canonical_names = {node.name for node in canonical_nodes.values()}
+
+    graph = nx.DiGraph(name="c_elegans_connectome")
+    for node in canonical_nodes.values():
+        graph.add_node(
+            node.name,
+            type=_neuron_type(node),
+            name=node.name,
+            region=_neuron_region(node.name),
+            source_type=node.node_type,
+            source_subtype=node.node_subtype,
+        )
+
+    for source_index, target_index, synapses in chemical_edges:
+        source = chemical_nodes.get(source_index)
+        target = chemical_nodes.get(target_index)
+        if source is None or target is None:
+            continue
+        if source.name not in canonical_names or target.name not in canonical_names:
+            continue
+        _upsert_edge(
+            graph,
+            source=source.name,
+            target=target.name,
+            chemical_weight=synapses,
+        )
+
+    gap_pair_weights: dict[tuple[str, str], int] = {}
+    for source_index, target_index, synapses in gap_edges:
+        source = gap_nodes.get(source_index)
+        target = gap_nodes.get(target_index)
+        if source is None or target is None:
+            continue
+        if source.name not in canonical_names or target.name not in canonical_names:
+            continue
+
+        if source.name == target.name:
+            _upsert_edge(
+                graph,
+                source=source.name,
+                target=target.name,
+                gap_weight=synapses,
+            )
+            continue
+
+        pair = tuple(sorted((source.name, target.name)))
+        gap_pair_weights[pair] = max(synapses, gap_pair_weights.get(pair, 0))
+
+    for (left, right), synapses in gap_pair_weights.items():
+        _upsert_edge(
+            graph,
+            source=left,
+            target=right,
+            gap_weight=synapses,
+        )
+        _upsert_edge(
+            graph,
+            source=right,
+            target=left,
+            gap_weight=synapses,
+        )
+
+    centrality_by_node = nx.degree_centrality(graph)
+    nx.set_node_attributes(graph, centrality_by_node, "degree_centrality")
+    return graph
+
+
+@lru_cache(maxsize=1)
+def _cached_connectome_graph() -> nx.DiGraph:
+    return build_connectome_graph()
+
+
+def get_connectome_graph() -> nx.DiGraph:
+    return _cached_connectome_graph().copy()
+
+
+def get_connectome_summary() -> dict[str, object]:
+    graph = _cached_connectome_graph()
+    type_counts = Counter(nx.get_node_attributes(graph, "type").values())
+    region_counts = Counter(nx.get_node_attributes(graph, "region").values())
+
+    return {
+        "node_count": graph.number_of_nodes(),
+        "edge_count": graph.number_of_edges(),
+        "chemical_edge_count": sum(
+            1 for _, _, edge_data in graph.edges(data=True) if edge_data["chemical_weight"] > 0
+        ),
+        "gap_edge_count": sum(
+            1 for _, _, edge_data in graph.edges(data=True) if edge_data["gap_weight"] > 0
+        ),
+        "type_counts": dict(type_counts),
+        "region_counts": dict(region_counts),
+        "top_degree_centrality": sorted(
+            (
+                {
+                    "name": node,
+                    "degree_centrality": graph.nodes[node]["degree_centrality"],
+                }
+                for node in graph.nodes
+            ),
+            key=lambda item: item["degree_centrality"],
+            reverse=True,
+        )[:10],
+    }

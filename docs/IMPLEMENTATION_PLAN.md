@@ -91,14 +91,14 @@ Run the living brain for a burn-in period (~5 simulated seconds), then record ba
 
 ### Metrics
 
-| Metric | What It Captures | How to Compute |
-|--------|-----------------|----------------|
-| **Firing rate distribution** | How active each neuron is | Spike count / time per neuron |
-| **Network synchrony** | Coordinated activity across the brain | Mean pairwise spike-train correlation |
-| **Signal propagation fidelity** | Can signals travel from sensory → motor? | Stimulate sensory neurons, measure motor neuron response latency + reliability |
-| **Shannon entropy of activity** | Richness/complexity of network dynamics | Entropy of binned spike count distribution |
-| **Functional connectivity** | Which neurons co-activate | Pearson correlation matrix of firing rates → compare to structural connectivity |
-| **Attractor stability** | Does the network return to the same state? | Perturb, then measure trajectory divergence |
+| Metric                          | What It Captures                           | How to Compute                                                                  |
+| ------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------- |
+| **Firing rate distribution**    | How active each neuron is                  | Spike count / time per neuron                                                   |
+| **Network synchrony**           | Coordinated activity across the brain      | Mean pairwise spike-train correlation                                           |
+| **Signal propagation fidelity** | Can signals travel from sensory → motor?   | Stimulate sensory neurons, measure motor neuron response latency + reliability  |
+| **Shannon entropy of activity** | Richness/complexity of network dynamics    | Entropy of binned spike count distribution                                      |
+| **Functional connectivity**     | Which neurons co-activate                  | Pearson correlation matrix of firing rates → compare to structural connectivity |
+| **Attractor stability**         | Does the network return to the same state? | Perturb, then measure trajectory divergence                                     |
 
 These become the **"healthy brain" fingerprint** — the reference against which all interventions are scored.
 
@@ -109,28 +109,31 @@ These become the **"healthy brain" fingerprint** — the reference against which
 ### 3.1 Intervention Types
 
 **Dropout (neurodegeneration model):**
+
 - Neuron is silenced — no more firing, all its outgoing synapses go dead
 - Simulates neuron death / degeneration
 
 **Replacement (regeneration model):**
+
 - Neuron is removed, then a new neuron is inserted at the same position
-- New neuron has *randomized* or *partially restored* connectivity (imperfect integration)
+- New neuron has _randomized_ or _partially restored_ connectivity (imperfect integration)
 - Simulates a stem-cell-derived replacement neuron that hasn't fully wired in
 
 **Graceful replacement:**
+
 - Old neuron is gradually faded out (decreasing synaptic weights) while new neuron is faded in
 - The key question: does gradual handoff preserve stability where abrupt swap doesn't?
 
 ### 3.2 Replacement Strategies
 
-| Strategy | Description |
-|----------|-------------|
-| **Random uniform** | Drop/replace neurons randomly regardless of type |
-| **Hub-targeted** | Preferentially hit high-degree hub neurons (worst case) |
-| **Hub-sparing** | Protect hubs, replace low-degree neurons first (best case?) |
-| **Type-targeted** | Replace only sensory, only motor, or only interneurons |
-| **Region-targeted** | Replace neurons in head, body, or tail |
-| **Gradual ramp** | Replace 1% per time window, increasing |
+| Strategy            | Description                                                 |
+| ------------------- | ----------------------------------------------------------- |
+| **Random uniform**  | Drop/replace neurons randomly regardless of type            |
+| **Hub-targeted**    | Preferentially hit high-degree hub neurons (worst case)     |
+| **Hub-sparing**     | Protect hubs, replace low-degree neurons first (best case?) |
+| **Type-targeted**   | Replace only sensory, only motor, or only interneurons      |
+| **Region-targeted** | Replace neurons in head, body, or tail                      |
+| **Gradual ramp**    | Replace 1% per time window, increasing                      |
 
 ### 3.3 Experimental Protocol
 
@@ -166,14 +169,14 @@ Normalized to [0, 1] where 0 = identical to baseline, 1 = total functional colla
 
 ### Key Outputs (Mapped to Challenge Goals)
 
-| Challenge Goal | Our Output |
-|---|---|
-| Replacement rate thresholds | Failure score vs. replacement fraction curves — where does the knee occur? |
-| Stability boundaries | Phase diagrams: strategy × fraction → stable / degraded / collapsed |
-| Network resilience under node substitution | Comparison across strategies — which neurons can you safely replace? |
-| Tipping points for dysfunction | The critical fraction where failure score jumps nonlinearly |
-| Optimal replacement-rate curves | For gradual replacement: what ramp speed avoids instability? |
-| Visualization of safe vs unstable regimes | Heatmaps, phase plots, animated network state |
+| Challenge Goal                             | Our Output                                                                 |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| Replacement rate thresholds                | Failure score vs. replacement fraction curves — where does the knee occur? |
+| Stability boundaries                       | Phase diagrams: strategy × fraction → stable / degraded / collapsed        |
+| Network resilience under node substitution | Comparison across strategies — which neurons can you safely replace?       |
+| Tipping points for dysfunction             | The critical fraction where failure score jumps nonlinearly                |
+| Optimal replacement-rate curves            | For gradual replacement: what ramp speed avoids instability?               |
+| Visualization of safe vs unstable regimes  | Heatmaps, phase plots, animated network state                              |
 
 ---
 
@@ -195,13 +198,13 @@ Normalized to [0, 1] where 0 = identical to baseline, 1 = total functional colla
 
 ## Tech Stack
 
-| Component | Tool | Reason |
-|-----------|------|--------|
-| Connectome data | OpenWorm CSV + NetworkX | Direct neuron-synapse-neuron graph, no preprocessing |
-| Neuron simulation | NumPy (vectorized LIF) | 302 neurons is tiny — no need for Brian2/NEST overhead |
-| Metrics | SciPy, NumPy | Entropy, correlation, signal analysis |
-| Visualization | Plotly / Dash or React + D3 | Interactive dashboards, real-time network rendering |
-| Orchestration | Python | Single language, fast iteration |
+| Component         | Tool                        | Reason                                                 |
+| ----------------- | --------------------------- | ------------------------------------------------------ |
+| Connectome data   | OpenWorm CSV + NetworkX     | Direct neuron-synapse-neuron graph, no preprocessing   |
+| Neuron simulation | NumPy (vectorized LIF)      | 302 neurons is tiny — no need for Brian2/NEST overhead |
+| Metrics           | SciPy, NumPy                | Entropy, correlation, signal analysis                  |
+| Visualization     | Plotly / Dash or React + D3 | Interactive dashboards, real-time network rendering    |
+| Orchestration     | Python                      | Single language, fast iteration                        |
 
 ---
 
@@ -216,15 +219,15 @@ Normalized to [0, 1] where 0 = identical to baseline, 1 = total functional colla
 
 ## Build Order
 
-| Step | Task | Est. Time |
-|------|------|-----------|
-| 1 | Load C. elegans connectome into NetworkX graph | 30 min |
-| 2 | Implement LIF neuron model (vectorized NumPy) | 1-2 hrs |
-| 3 | Wire LIF to connectome, add sensory drive — get a living brain | 1-2 hrs |
-| 4 | Implement baseline metric capture | 1 hr |
-| 5 | Implement dropout/replacement interventions | 1 hr |
-| 6 | Run sweep experiments, collect failure curves | 1 hr |
-| 7 | Build visualization dashboard | 2-3 hrs |
-| 8 | Polish, edge cases, stretch goals | remaining |
+| Step | Task                                                           | Est. Time |
+| ---- | -------------------------------------------------------------- | --------- |
+| 1    | Load C. elegans connectome into NetworkX graph                 | 30 min    |
+| 2    | Implement LIF neuron model (vectorized NumPy)                  | 1-2 hrs   |
+| 3    | Wire LIF to connectome, add sensory drive — get a living brain | 1-2 hrs   |
+| 4    | Implement baseline metric capture                              | 1 hr      |
+| 5    | Implement dropout/replacement interventions                    | 1 hr      |
+| 6    | Run sweep experiments, collect failure curves                  | 1 hr      |
+| 7    | Build visualization dashboard                                  | 2-3 hrs   |
+| 8    | Polish, edge cases, stretch goals                              | remaining |
 
 **Total core implementation: ~8-10 hours**

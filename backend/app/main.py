@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.connectome import get_connectome_summary
+
 app = FastAPI(title="Synaptech API", version="0.1.0")
 
 app.add_middleware(
@@ -20,3 +22,8 @@ def health_check() -> dict[str, str]:
 @app.get("/api/message")
 def read_message() -> dict[str, str]:
     return {"message": "FastAPI backend is running."}
+
+
+@app.get("/api/connectome/summary")
+def connectome_summary() -> dict[str, object]:
+    return get_connectome_summary()
