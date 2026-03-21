@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
@@ -101,6 +102,17 @@ class NodeRecord:
     node_type: str
     node_subtype: str
     name: str
+    pos: tuple[float, float] | None = None
+
+
+_POS_RE = re.compile(r"[-+]?\d*\.?\d+(?:e[-+]?\d+)?", re.IGNORECASE)
+
+
+def _parse_pos(raw: str) -> tuple[float, float] | None:
+    matches = _POS_RE.findall(raw)
+    if len(matches) >= 2:
+        return (float(matches[0]), float(matches[1]))
+    return None
 
 
 def _iter_csv_rows(path: Path) -> list[list[str]]:
@@ -117,12 +129,13 @@ def _iter_csv_rows(path: Path) -> list[list[str]]:
 def _read_nodes(path: Path) -> dict[int, NodeRecord]:
     nodes: dict[int, NodeRecord] = {}
     for row in _iter_csv_rows(path):
-        index, node_type, node_subtype, name, _ = row
+        index, node_type, node_subtype, name, raw_pos = row
         node = NodeRecord(
             index=int(index),
             node_type=node_type,
             node_subtype=node_subtype,
             name=name,
+            pos=_parse_pos(raw_pos),
         )
         nodes[node.index] = node
     return nodes
@@ -215,6 +228,7 @@ def build_connectome_graph() -> nx.DiGraph:
 
     graph = nx.DiGraph(name="c_elegans_connectome")
     for node in canonical_nodes.values():
+        pos_x, pos_y = node.pos if node.pos else (0.0, 0.0)
         graph.add_node(
             node.name,
             type=_neuron_type(node),
@@ -222,6 +236,8 @@ def build_connectome_graph() -> nx.DiGraph:
             region=_neuron_region(node.name),
             source_type=node.node_type,
             source_subtype=node.node_subtype,
+            pos_x=pos_x,
+            pos_y=pos_y,
         )
 
     for source_index, target_index, synapses in chemical_edges:
@@ -285,6 +301,32 @@ def _cached_connectome_graph() -> nx.DiGraph:
 
 def get_connectome_graph() -> nx.DiGraph:
     return _cached_connectome_graph().copy()
+
+
+def get_connectome_graph_data() -> dict[str, object]:
+    graph = _cached_connectome_graph()
+    nodes = []
+    for node_id, attrs in graph.nodes(data=True):
+        nodes.append({
+            "id": node_id,
+            "type": attrs["type"],
+            "region": attrs["region"],
+            "degree_centrality": round(attrs["degree_centrality"], 6),
+            "pos_x": attrs["pos_x"],
+            "pos_y": attrs["pos_y"],
+            "in_degree": graph.in_degree(node_id),
+            "out_degree": graph.out_degree(node_id),
+        })
+    edges = []
+    for src, tgt, attrs in graph.edges(data=True):
+        edges.append({
+            "source": src,
+            "target": tgt,
+            "chemical_weight": attrs["chemical_weight"],
+            "gap_weight": attrs["gap_weight"],
+            "weight": attrs["weight"],
+        })
+    return {"nodes": nodes, "edges": edges}
 
 
 def get_connectome_summary() -> dict[str, object]:
