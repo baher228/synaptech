@@ -430,6 +430,43 @@ def run_live_sweep_stream(
     rng = stdlib_random.Random(seed)
     engine = sim.engine  # type: ignore[attr-defined]
     graph = sim.graph  # type: ignore[attr-defined]
+    sim_lock = getattr(sim, "lock", getattr(sim, "_lock", None))
+
+    def _is_clock_exhaustion(exc: Exception) -> bool:
+        if isinstance(exc, StopIteration):
+            return True
+        if isinstance(exc, RuntimeError):
+            return "Clock has reached the end of its available times" in str(exc)
+        return False
+
+    # Only replace currently valid, non-ghosted neurons.
+    valid_targets = [
+        n for n in target_neurons
+        if graph.has_node(n) and not graph.nodes[n].get("is_ghosted")
+    ]
+
+    # Persistent live simulation keeps replacement neurons allocated between calls.
+    # If we are out of reserved slots, emit a structured SSE error instead of
+    # throwing from inside StreamingResponse.
+    next_free_slot = getattr(engine, "_next_free_slot", None)
+    pool_size = getattr(engine, "_n", None)
+    if isinstance(next_free_slot, int) and isinstance(pool_size, int):
+        remaining_slots = max(0, pool_size - next_free_slot)
+        required_slots = len(valid_targets)
+        if required_slots > remaining_slots:
+            yield {
+                "type": "error",
+                "error": "replacement_slot_exhausted",
+                "message": (
+                    "Not enough free neuron slots in persistent simulation for this live sweep. "
+                    "Reset the session via POST /api/simulation/session/reset and retry."
+                ),
+                "required_slots": required_slots,
+                "remaining_slots": remaining_slots,
+                "pool_size": pool_size,
+            }
+            yield {"type": "done"}
+            return
 
     sensory, motor = _neuron_groups(graph)
     b_class = list(B_CLASS_MOTOR_NEURONS)
@@ -437,14 +474,33 @@ def run_live_sweep_stream(
     import math
     total_steps = sum(
         math.ceil((graph.in_degree(n) + graph.out_degree(n)) / edges_per_step)
-        for n in target_neurons
-        if graph.has_node(n)
+        for n in valid_targets
     )
 
     # Quick baseline from current state (no rebuild)
-    engine.run(baseline_ms)
-    bl_trains = engine.get_spike_trains()
-    bl_voltages = engine.get_voltage_matrix(window_ms=baseline_ms)
+    try:
+        if sim_lock is not None:
+            with sim_lock:
+                engine.run(baseline_ms)
+                bl_trains = engine.get_spike_trains()
+                bl_voltages = engine.get_voltage_matrix(window_ms=baseline_ms)
+        else:
+            engine.run(baseline_ms)
+            bl_trains = engine.get_spike_trains()
+            bl_voltages = engine.get_voltage_matrix(window_ms=baseline_ms)
+    except Exception as exc:
+        if _is_clock_exhaustion(exc):
+            yield {
+                "type": "error",
+                "error": "clock_exhausted",
+                "message": (
+                    "Persistent simulation clock exhausted during live sweep baseline. "
+                    "Reset via POST /api/simulation/session/reset and retry."
+                ),
+            }
+            yield {"type": "done"}
+            return
+        raise
     baseline = compute_baseline(
         bl_trains, baseline_ms, sensory, motor,
         voltages=bl_voltages, b_class_names=b_class,
@@ -455,7 +511,7 @@ def run_live_sweep_stream(
         "data": baseline.to_dict(),
         "strategy": "one_by_one_live",
         "neuron_model": "lif",
-        "replacement_order": target_neurons,
+        "replacement_order": valid_targets,
         "total_steps": total_steps,
         "replacement_mode": replacement_mode,
     }
@@ -464,34 +520,76 @@ def run_live_sweep_stream(
     service = ReplacementService(graph=graph, engine=engine)
     global_step = 0
 
-    for neuron_name in target_neurons:
-        if not graph.has_node(neuron_name):
-            continue
-        if graph.nodes[neuron_name].get("is_ghosted"):
-            continue
-
-        session = service.start_replacement(
-            faulty_neuron=neuron_name,
-            edge_order="random",
-            seed=rng.randint(0, 10**9),
-            mode=replacement_mode,
-            theta=ou_theta,
-            sigma=ou_sigma,
-        )
+    for neuron_name in valid_targets:
+        try:
+            if sim_lock is not None:
+                with sim_lock:
+                    session = service.start_replacement(
+                        faulty_neuron=neuron_name,
+                        edge_order="random",
+                        seed=rng.randint(0, 10**9),
+                        mode=replacement_mode,
+                        theta=ou_theta,
+                        sigma=ou_sigma,
+                    )
+            else:
+                session = service.start_replacement(
+                    faulty_neuron=neuron_name,
+                    edge_order="random",
+                    seed=rng.randint(0, 10**9),
+                    mode=replacement_mode,
+                    theta=ou_theta,
+                    sigma=ou_sigma,
+                )
+        except RuntimeError as exc:
+            yield {
+                "type": "error",
+                "error": "replacement_start_failed",
+                "neuron": neuron_name,
+                "message": str(exc),
+            }
+            break
         total_edges = len(session.pending) + len(session.completed)
 
         while session.status != "completed":
-            if session.mode == "ou":
-                session = service.tick_ou(session.session_id)
-            else:
-                session = service.step_replacement(
-                    session.session_id,
-                    edges_to_migrate=edges_per_step,
-                )
-            engine.run(step_ms)
-
-            trains = engine.get_spike_trains()
-            voltages = engine.get_voltage_matrix(window_ms=step_ms)
+            try:
+                if sim_lock is not None:
+                    with sim_lock:
+                        if session.mode == "ou":
+                            session = service.tick_ou(session.session_id)
+                        else:
+                            session = service.step_replacement(
+                                session.session_id,
+                                edges_to_migrate=edges_per_step,
+                            )
+                        engine.run(step_ms)
+                        trains = engine.get_spike_trains()
+                        voltages = engine.get_voltage_matrix(window_ms=step_ms)
+                else:
+                    if session.mode == "ou":
+                        session = service.tick_ou(session.session_id)
+                    else:
+                        session = service.step_replacement(
+                            session.session_id,
+                            edges_to_migrate=edges_per_step,
+                        )
+                    engine.run(step_ms)
+                    trains = engine.get_spike_trains()
+                    voltages = engine.get_voltage_matrix(window_ms=step_ms)
+            except Exception as exc:
+                if _is_clock_exhaustion(exc):
+                    yield {
+                        "type": "error",
+                        "error": "clock_exhausted",
+                        "neuron": neuron_name,
+                        "message": (
+                            "Persistent simulation clock exhausted during live sweep. "
+                            "Reset via POST /api/simulation/session/reset and retry."
+                        ),
+                    }
+                    yield {"type": "done"}
+                    return
+                raise
 
             rates = firing_rate_distribution(trains, step_ms)
             rate_vals = np.array(list(rates.values()))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import threading
 
 import networkx as nx
 import numpy as np
@@ -11,6 +12,7 @@ import numpy as np
 from app.simulation.factory import get_engine
 
 _FORWARD_COMMAND_NEURONS = ("AVBL", "AVBR", "PVCL", "PVCR")
+_ASSAY_LOCK = threading.Lock()
 
 
 def _series(prefix: str, start: int, stop: int, graph: nx.DiGraph) -> list[str]:
@@ -340,30 +342,74 @@ def run_forward_locomotion_assay(
     if not resolved_targets:
         raise ValueError("No valid stimulus targets found in graph for the requested protocol.")
 
-    engine = get_engine(engine_name)
-    engine.build(graph.copy(), neuron_model=neuron_model)
+    with _ASSAY_LOCK:
+        engine = get_engine(engine_name)
+        engine.build(graph.copy(), neuron_model=neuron_model)
 
-    if not hasattr(engine, "apply_drive_overrides") or not hasattr(engine, "clear_drive_overrides"):
-        raise ValueError(f"Engine '{engine_name}' does not support drive override protocols.")
+        if not hasattr(engine, "apply_drive_overrides") or not hasattr(engine, "clear_drive_overrides"):
+            raise ValueError(f"Engine '{engine_name}' does not support drive override protocols.")
 
-    engine.run(burn_in_ms)
-    is_stim_on = None
-    elapsed_ms = 0.0
-    while elapsed_ms < duration_ms - 1e-9:
-        run_ms = min(integration_step_ms, duration_ms - elapsed_ms)
-        now_ms = elapsed_ms + 0.5 * run_ms
-        stim_on = protocol.is_active(now_ms)
-        if stim_on != is_stim_on:
-            if stim_on:
-                engine.apply_drive_overrides({n: protocol.amplitude_pA for n in resolved_targets})
+        def _is_clock_exhaustion(exc: Exception) -> bool:
+            if isinstance(exc, StopIteration):
+                return True
+            if isinstance(exc, RuntimeError):
+                msg = str(exc)
+                return "Clock has reached the end of its available times" in msg
+            return False
+    
+        def _run_or_raise(duration_ms_local: float) -> None:
+            try:
+                engine.run(duration_ms_local)
+            except Exception as exc:
+                if _is_clock_exhaustion(exc):
+                    raise ValueError(
+                        "Simulation clock exhausted during behavioral assay run. "
+                        "Please retry (and if needed reset the backend simulation session)."
+                    ) from exc
+                raise
+
+        _run_or_raise(burn_in_ms)
+        is_stim_on = None
+
+        def _time_to_next_stim_change(t_ms: float) -> float:
+            """Return positive time (ms) until protocol changes ON/OFF state."""
+            if t_ms < protocol.start_ms:
+                return protocol.start_ms - t_ms
+            if t_ms >= protocol.stop_ms:
+                return float("inf")
+
+            period = protocol.period_ms
+            pulse = protocol.pulse_width_ms()
+            phase = (t_ms - protocol.start_ms) % period
+            if phase < pulse:
+                # Currently ON, next change at pulse end (or stop)
+                dt = pulse - phase
             else:
-                engine.clear_drive_overrides()
-            is_stim_on = stim_on
-        engine.run(run_ms)
-        elapsed_ms += run_ms
+                # Currently OFF (inside protocol window), next change at next period start.
+                dt = period - phase
+            # Clamp to protocol stop.
+            return max(1e-9, min(dt, protocol.stop_ms - t_ms))
 
-    engine.clear_drive_overrides()
-    spike_trains = engine.get_spike_trains()
+        elapsed_ms = 0.0
+        while elapsed_ms < duration_ms - 1e-9:
+            stim_on = protocol.is_active(elapsed_ms + 1e-9)
+            if stim_on != is_stim_on:
+                if stim_on:
+                    engine.apply_drive_overrides({n: protocol.amplitude_pA for n in resolved_targets})
+                else:
+                    engine.clear_drive_overrides()
+                is_stim_on = stim_on
+
+            run_ms = min(
+                integration_step_ms,
+                duration_ms - elapsed_ms,
+                _time_to_next_stim_change(elapsed_ms),
+            )
+            _run_or_raise(run_ms)
+            elapsed_ms += run_ms
+
+        engine.clear_drive_overrides()
+        spike_trains = engine.get_spike_trains()
 
     b_dorsal = _series("DB", 1, 7, graph)
     b_ventral = _series("VB", 1, 11, graph)

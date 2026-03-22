@@ -105,3 +105,8 @@ class PersistentSimulation:
     @property
     def neuron_model(self) -> str:
         return self._neuron_model
+
+    @property
+    def lock(self):
+        """Expose the engine lock for coordinated multi-route access."""
+        return self._lock

@@ -101,7 +101,7 @@ export function createReplacementControl(
       </div>
       ` : ''}
       <div class="replacement-actions">
-        <button class="replacement-btn" data-action="pick" ${busy || autoRunning ? 'disabled' : ''}>Pick Random Faulty</button>
+        <button class="replacement-btn" data-action="pick" ${busy || autoRunning ? 'disabled' : ''}>Pick a Neuron</button>
         <button class="replacement-btn" data-action="start" ${busy || autoRunning ? 'disabled' : ''}>Start Replacement</button>
         ${!isOU ? `<button class="replacement-btn" data-action="step" ${busy || autoRunning || !canStep ? 'disabled' : ''}>Migrate One Edge</button>` : ''}
         <button class="replacement-btn" data-action="auto" ${busy || autoRunning || !canStep ? 'disabled' : ''}>Auto Complete</button>
@@ -112,7 +112,7 @@ export function createReplacementControl(
 
   async function pickRandomFaulty(): Promise<void> {
     busy = true
-    statusText = 'Selecting random faulty neuron...'
+    statusText = 'Selecting neuron...'
     render()
     try {
       const neurons = await fetchRandomFaultyNeurons(1)
@@ -121,7 +121,7 @@ export function createReplacementControl(
         ? `Candidate selected: ${candidateFaulty}`
         : 'No candidate neuron available'
     } catch (error) {
-      statusText = `Faulty selection failed: ${formatError(error)}`
+      statusText = `Neuron selection failed: ${formatError(error)}`
     } finally {
       busy = false
       render()

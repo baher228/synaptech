@@ -475,18 +475,27 @@ def simulation_replacement_sweep_stream(
     )
 
     def sse_generator():
-        for event in run_live_sweep_stream(
-            sim=sim,
-            target_neurons=targets,
-            step_ms=step_ms,
-            baseline_ms=baseline_ms,
-            edges_per_step=edges_per_step,
-            seed=seed,
-            replacement_mode=replacement_mode,
-            ou_theta=ou_theta,
-            ou_sigma=ou_sigma,
-        ):
-            yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+        try:
+            for event in run_live_sweep_stream(
+                sim=sim,
+                target_neurons=targets,
+                step_ms=step_ms,
+                baseline_ms=baseline_ms,
+                edges_per_step=edges_per_step,
+                seed=seed,
+                replacement_mode=replacement_mode,
+                ou_theta=ou_theta,
+                ou_sigma=ou_sigma,
+            ):
+                yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+        except Exception as exc:
+            event = {
+                "type": "error",
+                "error": "stream_failed",
+                "message": str(exc),
+            }
+            yield f"event: error\ndata: {json.dumps(event)}\n\n"
+            yield "event: done\ndata: {\"type\":\"done\"}\n\n"
 
     return StreamingResponse(
         sse_generator(),
@@ -565,6 +574,16 @@ def simulation_behavior_performance(req: BehaviorPerformanceRequest) -> dict[str
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        if "Clock has reached the end of its available times" in str(exc):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Simulation clock exhausted while running behavioral assay. "
+                    "Please retry (and reset session if needed)."
+                ),
+            ) from exc
+        raise
 
 
 @app.get("/api/simulation/spikes")

@@ -15,6 +15,7 @@ syn gbase=0.01nS, exc_erev=0mV, inh_erev=-80mV, tau_rise=3ms, tau_decay=10ms).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import threading
 
 import networkx as nx
 import numpy as np
@@ -27,7 +28,7 @@ from brian2 import (
     SpikeMonitor,
     StateMonitor,
     Network,
-    defaultclock,
+    Clock,
     start_scope,
     mV,
     ms,
@@ -40,6 +41,10 @@ from brian2 import (
 )
 
 prefs.codegen.target = "numpy"
+
+# Brian2 uses global module state (e.g. start_scope/default objects) that is not
+# thread-safe across concurrent engine instances. Serialize Brian2 calls process-wide.
+_BRIAN2_GLOBAL_LOCK = threading.RLock()
 
 # Pool size: 302 real neurons + up to 48 replacement slots
 _POOL_SIZE = 350
@@ -163,6 +168,7 @@ class Brian2Engine:
     _gap_syn: Synapses | None = None
     _spike_mon: SpikeMonitor | None = None
     _state_mon: StateMonitor | None = None
+    _clock: Clock | None = None
 
     _graph: nx.DiGraph | None = None
     _sim_time_ms: float = 0.0
@@ -177,76 +183,78 @@ class Brian2Engine:
 
     def build(self, graph: nx.DiGraph, neuron_model: str = "lif",
               pool_size: int = _POOL_SIZE) -> None:
-        start_scope()
-        defaultclock.dt = 0.5 * ms
+        with _BRIAN2_GLOBAL_LOCK:
+            start_scope()
 
-        self._graph = graph
-        self._model = neuron_model
-        self._neuron_names = list(graph.nodes)
-        self._name_to_idx = {name: i for i, name in enumerate(self._neuron_names)}
-        self._n_real = len(self._neuron_names)
-        self._n = max(pool_size, self._n_real)
-        self._next_free_slot = self._n_real
-        self._sensory_indices = [
-            i for i, n in enumerate(self._neuron_names)
-            if graph.nodes[n].get("type") == "S"
-        ]
-        self._inter_indices = [
-            i for i, n in enumerate(self._neuron_names)
-            if graph.nodes[n].get("type") == "I"
-        ]
-        self._motor_indices = [
-            i for i, n in enumerate(self._neuron_names)
-            if graph.nodes[n].get("type") == "M"
-        ]
-        self._command_indices = [
-            i for i, n in enumerate(self._neuron_names)
-            if n.startswith(_COMMAND_PREFIXES)
-        ]
+            self._graph = graph
+            self._model = neuron_model
+            self._neuron_names = list(graph.nodes)
+            self._name_to_idx = {name: i for i, name in enumerate(self._neuron_names)}
+            self._n_real = len(self._neuron_names)
+            self._n = max(pool_size, self._n_real)
+            self._next_free_slot = self._n_real
+            self._sensory_indices = [
+                i for i, n in enumerate(self._neuron_names)
+                if graph.nodes[n].get("type") == "S"
+            ]
+            self._inter_indices = [
+                i for i, n in enumerate(self._neuron_names)
+                if graph.nodes[n].get("type") == "I"
+            ]
+            self._motor_indices = [
+                i for i, n in enumerate(self._neuron_names)
+                if graph.nodes[n].get("type") == "M"
+            ]
+            self._command_indices = [
+                i for i, n in enumerate(self._neuron_names)
+                if n.startswith(_COMMAND_PREFIXES)
+            ]
 
-        self._build_neurons()
+            self._build_neurons()
 
-        # Mark pre-allocated empty slots as dead
-        for idx in range(self._n_real, self._n):
-            self._neurons.is_alive[idx] = 0
+            # Mark pre-allocated empty slots as dead
+            for idx in range(self._n_real, self._n):
+                self._neurons.is_alive[idx] = 0
 
-        self._build_chemical_synapses(graph)
-        self._build_gap_junctions(graph)
+            self._build_chemical_synapses(graph)
+            self._build_gap_junctions(graph)
 
-        self._spike_mon = SpikeMonitor(self._neurons)
-        self._state_mon = StateMonitor(self._neurons, "v", record=True, dt=1 * ms)
+            self._spike_mon = SpikeMonitor(self._neurons)
+            self._state_mon = StateMonitor(self._neurons, "v", record=True, dt=1 * ms)
 
-        self._net = Network(
-            self._neurons,
-            self._exc_syn,
-            self._inh_syn,
-            self._gap_syn,
-            self._spike_mon,
-            self._state_mon,
-        )
-        self._sim_time_ms = 0.0
-        self._run_start_ms = 0.0
-        self._baseline_drive_pA = np.array(self._neurons.drive / pA, dtype=float)
-        self._drive_overrides_pA.clear()
-        self._built = True
+            self._net = Network(
+                self._neurons,
+                self._exc_syn,
+                self._inh_syn,
+                self._gap_syn,
+                self._spike_mon,
+                self._state_mon,
+            )
+            self._sim_time_ms = 0.0
+            self._run_start_ms = 0.0
+            self._baseline_drive_pA = np.array(self._neurons.drive / pA, dtype=float)
+            self._drive_overrides_pA.clear()
+            self._built = True
 
     def run(self, duration_ms: float) -> None:
         if not self._built:
             raise RuntimeError("Call build() before run()")
-        self._run_start_ms = self._sim_time_ms
-        self._net.run(duration_ms * ms)
-        self._sim_time_ms += duration_ms
+        with _BRIAN2_GLOBAL_LOCK:
+            self._run_start_ms = self._sim_time_ms
+            self._net.run(duration_ms * ms)
+            self._sim_time_ms += duration_ms
 
     def get_spike_trains(self) -> dict[str, list[float]]:
-        trains: dict[str, list[float]] = {n: [] for n in self._neuron_names}
-        indices = np.array(self._spike_mon.i)
-        times = np.array(self._spike_mon.t / ms)
-        mask = times >= self._run_start_ms
-        for idx, t in zip(indices[mask], times[mask]):
-            idx_int = int(idx)
-            if idx_int < len(self._neuron_names):
-                trains[self._neuron_names[idx_int]].append(float(t - self._run_start_ms))
-        return trains
+        with _BRIAN2_GLOBAL_LOCK:
+            trains: dict[str, list[float]] = {n: [] for n in self._neuron_names}
+            indices = np.array(self._spike_mon.i)
+            times = np.array(self._spike_mon.t / ms)
+            mask = times >= self._run_start_ms
+            for idx, t in zip(indices[mask], times[mask]):
+                idx_int = int(idx)
+                if idx_int < len(self._neuron_names):
+                    trains[self._neuron_names[idx_int]].append(float(t - self._run_start_ms))
+            return trains
 
     def get_firing_rates(self) -> dict[str, float]:
         dur_s = (self._sim_time_ms - self._run_start_ms) / 1000.0
@@ -256,22 +264,24 @@ class Brian2Engine:
         return {name: len(ts) / dur_s for name, ts in trains.items()}
 
     def get_voltages(self) -> dict[str, np.ndarray]:
-        vs = np.array(self._state_mon.v / mV)
-        return {self._neuron_names[i]: vs[i] for i in range(len(self._neuron_names))}
+        with _BRIAN2_GLOBAL_LOCK:
+            vs = np.array(self._state_mon.v / mV)
+            return {self._neuron_names[i]: vs[i] for i in range(len(self._neuron_names))}
 
     def get_voltage_matrix(self, window_ms: float | None = None) -> np.ndarray:
         """Return (n_real, T) voltage matrix in mV.
 
         If *window_ms* is given, return only the last *window_ms* columns.
         """
-        vs = np.array(self._state_mon.v / mV)
-        mat = vs[:self._n_real, :]
-        if window_ms is not None and window_ms > 0:
-            # StateMonitor records at 1 ms resolution
-            n_samples = int(window_ms)
-            if n_samples < mat.shape[1]:
-                mat = mat[:, -n_samples:]
-        return mat
+        with _BRIAN2_GLOBAL_LOCK:
+            vs = np.array(self._state_mon.v / mV)
+            mat = vs[:self._n_real, :]
+            if window_ms is not None and window_ms > 0:
+                # StateMonitor records at 1 ms resolution
+                n_samples = int(window_ms)
+                if n_samples < mat.shape[1]:
+                    mat = mat[:, -n_samples:]
+            return mat
 
     def silence_neurons(self, neuron_names: list[str]) -> None:
         for name in neuron_names:
@@ -383,6 +393,10 @@ class Brian2Engine:
     def _build_neurons(self) -> None:
         model = self._model
 
+        # Use an engine-local Clock instead of brian2.defaultclock to avoid
+        # cross-request/global dt coupling between concurrent simulations.
+        self._clock = Clock(dt=(0.05 if model == "hh" else 0.5) * ms)
+
         if model == "lif":
             self._neurons = NeuronGroup(
                 self._n, _LIF_EQS,
@@ -390,6 +404,7 @@ class Brian2Engine:
                 reset=_LIF_RESET,
                 refractory=2 * ms,
                 method="euler",
+                clock=self._clock,
             )
             ng = self._neurons
             ng.v = -50 * mV
@@ -416,6 +431,7 @@ class Brian2Engine:
                 threshold=_IZH_THRESHOLD,
                 reset=_IZH_RESET,
                 method="euler",
+                clock=self._clock,
             )
             ng = self._neurons
             ng.v = -65 * mV
@@ -433,13 +449,13 @@ class Brian2Engine:
                 ng.drive[idx] = 80.0 * pA
 
         elif model == "hh":
-            defaultclock.dt = 0.05 * ms
             self._neurons = NeuronGroup(
                 self._n, _HH_EQS,
                 threshold=_HH_THRESHOLD,
                 reset=_HH_RESET,
                 refractory=3 * ms,
                 method="exponential_euler",
+                clock=self._clock,
             )
             ng = self._neurons
             ng.v = -65 * mV
@@ -476,6 +492,7 @@ class Brian2Engine:
             self._neurons, self._neurons,
             model=exc_eqs,
             on_pre="s_exc += w_exc * int(is_alive_pre > 0.5)",
+            clock=self._clock,
             namespace={
                 "tau_rise_exc": 3 * ms,
                 "tau_decay_exc": 10 * ms,
@@ -497,6 +514,7 @@ class Brian2Engine:
             self._neurons, self._neurons,
             model=inh_eqs,
             on_pre="s_inh += w_inh * int(is_alive_pre > 0.5)",
+            clock=self._clock,
             namespace={
                 "tau_rise_inh": 3 * ms,
                 "tau_decay_inh": 10 * ms,
@@ -525,6 +543,7 @@ class Brian2Engine:
             self._neurons, self._neurons,
             """w_gap : siemens
                I_gap_post = w_gap * (v_pre - v_post) : amp (summed)""",
+            clock=self._clock,
         )
         self._gap_syn.connect()  # all-to-all
         self._gap_syn.w_gap = 0 * nS
