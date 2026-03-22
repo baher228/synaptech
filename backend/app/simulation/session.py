@@ -101,3 +101,7 @@ class PersistentSimulation:
     @property
     def graph(self):
         return self._graph
+
+    @property
+    def neuron_model(self) -> str:
+        return self._neuron_model

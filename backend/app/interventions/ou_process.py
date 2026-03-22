@@ -11,11 +11,14 @@ controls convergence speed, and sigma captures biological noise.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from app.interventions.replacement_service import EdgeMigration
 from app.simulation.protocol import SimulationEngine
+
+if TYPE_CHECKING:
+    from app.interventions.replacement_service import EdgeMigration
 
 
 # Strategy-dependent defaults: hub neurons get slow cautious replacement,

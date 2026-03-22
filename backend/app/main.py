@@ -23,6 +23,11 @@ from app.interventions.sweep import (
     run_replacement_sweep_stream,
     run_live_sweep_stream,
 )
+from app.metrics.behavior_assays import (
+    ForwardLocomotionProtocol,
+    forward_locomotion_behavior_spec,
+    run_forward_locomotion_assay,
+)
 from app.metrics.metrics import compute_baseline, failure_score
 from app.simulation.factory import get_engine, list_engines
 from app.simulation.session import PersistentSimulation
@@ -446,13 +451,85 @@ def simulation_replacement_sweep_stream(
     )
 
 
+class ForwardProtocolRequest(BaseModel):
+    targets: list[str] = Field(default_factory=lambda: ["DB01", "VB01"])
+    amplitude_pA: float = Field(default=8.0, ge=0.0, le=200.0)
+    period_ms: float = Field(default=200.0, gt=1.0, le=5000.0)
+    duty_cycle: float = Field(default=0.5, gt=0.0, le=1.0)
+    start_ms: float = Field(default=0.0, ge=0.0)
+    stop_ms: float | None = Field(default=None, ge=0.0)
+
+
+class BehaviorPerformanceRequest(BaseModel):
+    behavior: Literal["forward_locomotion"] = "forward_locomotion"
+    graph_source: Literal["canonical", "replacement"] = "canonical"
+    engine: str = "brian2"
+    neuron_model: str = "lif"
+    burn_in_ms: float = Field(default=1500.0, ge=0.0, le=20000.0)
+    duration_ms: float = Field(default=4000.0, gt=50.0, le=120000.0)
+    integration_step_ms: float = Field(default=10.0, gt=0.0, le=500.0)
+    include_traces: bool = False
+    protocol: ForwardProtocolRequest = Field(default_factory=ForwardProtocolRequest)
+    body_curvature: list[float] | None = None
+    body_speed_mm_s: list[float] | None = None
+
+
+@app.get("/api/simulation/behavior/specs")
+def simulation_behavior_specs() -> dict[str, object]:
+    graph = get_connectome_graph()
+    return {"behaviors": [forward_locomotion_behavior_spec(graph)]}
+
+
+@app.post("/api/simulation/behavior/performance")
+def simulation_behavior_performance(req: BehaviorPerformanceRequest) -> dict[str, object]:
+    if req.behavior != "forward_locomotion":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported behavior '{req.behavior}'.",
+        )
+
+    if req.graph_source == "replacement":
+        graph = _replacement_service().graph.copy()
+    else:
+        graph = get_connectome_graph()
+    stop_ms = req.protocol.stop_ms if req.protocol.stop_ms is not None else req.duration_ms
+    protocol = ForwardLocomotionProtocol(
+        targets=req.protocol.targets,
+        amplitude_pA=req.protocol.amplitude_pA,
+        period_ms=req.protocol.period_ms,
+        duty_cycle=req.protocol.duty_cycle,
+        start_ms=req.protocol.start_ms,
+        stop_ms=stop_ms,
+    )
+
+    try:
+        result = run_forward_locomotion_assay(
+            graph=graph,
+            engine_name=req.engine,
+            neuron_model=req.neuron_model,
+            burn_in_ms=req.burn_in_ms,
+            duration_ms=req.duration_ms,
+            protocol=protocol,
+            integration_step_ms=req.integration_step_ms,
+            include_traces=req.include_traces,
+            body_curvature=req.body_curvature,
+            body_speed_mm_s=req.body_speed_mm_s,
+        )
+        assay_context = result.get("assay_context")
+        if isinstance(assay_context, dict):
+            assay_context["graph_source"] = req.graph_source
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/simulation/spikes")
 async def simulation_spikes(
     duration_ms: float = 5000.0,
 ) -> dict:
     """Run the persistent simulation forward and return spike trains."""
     sim = _persistent_simulation()
-    result = sim.step(duration_ms)
+    sim.step(duration_ms)
     trains = sim.engine.get_spike_trains()
     # Strip neurons with no spikes to reduce payload
     sparse = {n: times for n, times in trains.items() if times}
@@ -461,8 +538,8 @@ async def simulation_spikes(
         "spike_trains": sparse,
         "neuron_count": len(trains),
         "active_count": len(sparse),
-        "engine": engine,
-        "neuron_model": neuron_model,
+        "engine": sim.engine.name,
+        "neuron_model": sim.neuron_model,
     }
 
 

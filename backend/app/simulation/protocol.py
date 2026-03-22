@@ -81,3 +81,15 @@ class SimulationEngine(Protocol):
     def reset(self) -> None:
         """Clear all state and monitors so the next ``run`` starts fresh."""
         ...
+
+    def apply_drive_overrides(self, overrides_pA: dict[str, float]) -> None:
+        """Apply additive drive overrides (pA) for selected neurons.
+
+        Values are interpreted as offsets relative to each neuron's
+        baseline tonic drive configured during ``build``.
+        """
+        ...
+
+    def clear_drive_overrides(self) -> None:
+        """Remove all drive overrides and restore baseline tonic drives."""
+        ...

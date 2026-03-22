@@ -168,6 +168,8 @@ class Brian2Engine:
     _sim_time_ms: float = 0.0
     _run_start_ms: float = 0.0
     _built: bool = False
+    _baseline_drive_pA: np.ndarray | None = None
+    _drive_overrides_pA: dict[int, float] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ #
     #  Protocol methods
@@ -224,6 +226,8 @@ class Brian2Engine:
         )
         self._sim_time_ms = 0.0
         self._run_start_ms = 0.0
+        self._baseline_drive_pA = np.array(self._neurons.drive / pA, dtype=float)
+        self._drive_overrides_pA.clear()
         self._built = True
 
     def run(self, duration_ms: float) -> None:
@@ -305,6 +309,8 @@ class Brian2Engine:
             src_idx = self._name_to_idx.get(copy_params_from)
             if src_idx is not None:
                 self._neurons.drive[idx] = self._neurons.drive[src_idx]
+                if self._baseline_drive_pA is not None and src_idx < len(self._baseline_drive_pA):
+                    self._baseline_drive_pA[idx] = float(self._baseline_drive_pA[src_idx])
         return idx
 
     def set_weights(
@@ -341,6 +347,30 @@ class Brian2Engine:
     def reset(self) -> None:
         if self._built:
             self.build(self._graph, self._model)
+
+    def apply_drive_overrides(self, overrides_pA: dict[str, float]) -> None:
+        """Apply additive drive-current overrides relative to baseline."""
+        if not self._built:
+            raise RuntimeError("Call build() before apply_drive_overrides()")
+        if self._neurons is None or self._baseline_drive_pA is None:
+            raise RuntimeError("Neuron group is not initialised.")
+
+        # Restore prior overrides first, then apply the new override set.
+        for idx in list(self._drive_overrides_pA.keys()):
+            self._neurons.drive[idx] = float(self._baseline_drive_pA[idx]) * pA
+        self._drive_overrides_pA.clear()
+
+        for name, delta_pA in overrides_pA.items():
+            idx = self._name_to_idx.get(name)
+            if idx is None or idx >= len(self._baseline_drive_pA):
+                continue
+            base = float(self._baseline_drive_pA[idx])
+            self._neurons.drive[idx] = (base + float(delta_pA)) * pA
+            self._drive_overrides_pA[idx] = float(delta_pA)
+
+    def clear_drive_overrides(self) -> None:
+        """Remove all active drive overrides and restore baseline drives."""
+        self.apply_drive_overrides({})
 
     # ------------------------------------------------------------------ #
     #  Internal builders
