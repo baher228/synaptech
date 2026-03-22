@@ -7,9 +7,9 @@
   --sensory: #0EA5E9;
   --interneuron: #8B5CF6;
   --motor: #F59E0B;
-  --glass-bg: rgba(255, 255, 255, 0.78);
-  --glass-border: rgba(255, 255, 255, 0.4);
-  --shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04);
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.25);
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04), inset 0 0 0 1px rgba(255, 255, 255, 0.15);
   --mono: 'DM Mono', 'Consolas', monospace;
   --sans: 'Instrument Sans', 'Segoe UI', sans-serif;
 }
@@ -36,7 +36,9 @@ body {
   position: fixed;
   inset: 0;
   z-index: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(circle, #d1d5db 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--bg);
 }
 
 /* Sigma canvas styling */
@@ -96,10 +98,10 @@ body {
   gap: 8px;
   padding: 14px 18px;
   background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
-  border-radius: 14px;
+  border-radius: 8px;
   box-shadow: var(--shadow);
 }
 
@@ -115,13 +117,59 @@ body {
   gap: 6px;
   padding: 14px 16px;
   background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
-  border-radius: 14px;
+  border-radius: 8px;
   box-shadow: var(--shadow);
   max-height: calc(100vh - 72px);
   overflow-y: auto;
+}
+
+/* ─── Tab bar ─── */
+
+.metrics-tab-bar {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.metrics-tab {
+  border: none;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.metrics-tab:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text);
+}
+
+.metrics-tab-active {
+  background: var(--text);
+  color: var(--surface);
+}
+
+.metrics-tab-active:hover {
+  background: var(--text);
+  color: var(--surface);
+}
+
+.metrics-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .metrics-title {
@@ -169,7 +217,7 @@ body {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 5px 8px;
 }
 
@@ -180,7 +228,7 @@ body {
 
 .metrics-btn {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 7px 14px;
   font-family: var(--mono);
   font-size: 0.68rem;
@@ -221,14 +269,14 @@ body {
   width: 100%;
   height: 4px;
   background: var(--border);
-  border-radius: 2px;
+  border-radius: 1px;
   overflow: hidden;
 }
 
 .metrics-progress-bar {
   height: 100%;
   background: var(--interneuron);
-  border-radius: 2px;
+  border-radius: 1px;
   transition: width 150ms ease;
 }
 
@@ -240,7 +288,7 @@ body {
 }
 
 .metrics-chart-slot {
-  border-radius: 6px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
@@ -278,6 +326,53 @@ body {
   border-color: #f87171;
 }
 
+/* ─── Behaviour stats grid ─── */
+
+.behaviour-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.behaviour-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.behaviour-stat-label {
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.behaviour-stat-value {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* ─── Indeterminate progress bar ─── */
+
+.behaviour-progress-indeterminate {
+  width: 30% !important;
+  animation: indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes indeterminate {
+  0% { margin-left: 0; }
+  50% { margin-left: 70%; }
+  100% { margin-left: 0; }
+}
+
 .replacement-control {
   position: absolute;
   left: 28px;
@@ -288,10 +383,10 @@ body {
   gap: 6px;
   padding: 14px 16px;
   background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
-  border-radius: 14px;
+  border-radius: 8px;
   box-shadow: var(--shadow);
 }
 
@@ -325,7 +420,7 @@ body {
 
 .replacement-btn {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 7px 9px;
   font-family: var(--mono);
   font-size: 0.68rem;
@@ -387,10 +482,10 @@ body {
   gap: 10px;
   padding: 10px 14px;
   background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
-  border-radius: 14px;
+  border-radius: 8px;
   box-shadow: var(--shadow);
 }
 
@@ -410,7 +505,7 @@ body {
 
 .speed-btn {
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 6px 12px;
   font-family: var(--mono);
   font-size: 0.78rem;
@@ -445,7 +540,7 @@ body {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
-  border-radius: 16px;
+  border-radius: 10px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.04);
   animation: tooltip-in 200ms ease-out both;
 }

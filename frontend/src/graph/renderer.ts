@@ -1,11 +1,19 @@
 import Graph from 'graphology'
 import Sigma from 'sigma'
 import { EdgeLineProgram } from 'sigma/rendering'
+import { createNodeBorderProgram } from '@sigma/node-border'
 
 import type { GraphData, GraphNode } from '../types'
 import { state } from '../state'
 import { normalizePositions } from './layout'
-import { NEURON_COLORS, NEURON_GLOW_COLORS, EDGE_COLOR, lerpColor } from './colors'
+import { NEURON_COLORS, NEURON_GLOW_COLORS, EDGE_COLOR, BG_COLOR, lerpColor } from './colors'
+
+const NodeBorderProgram = createNodeBorderProgram({
+  borders: [
+    { size: { value: 0.2, mode: 'relative' }, color: { attribute: 'borderColor' } },
+    { size: { fill: true }, color: { attribute: 'color' } },
+  ],
+})
 
 export interface RendererContext {
   graph: Graph
@@ -25,6 +33,10 @@ export function createRenderer(
   applyGraphData(graph, glowIntensities, nodeIndex, data)
 
   const sigma = new Sigma(graph, container, {
+    defaultNodeType: 'bordered',
+    nodeProgramClasses: {
+      bordered: NodeBorderProgram,
+    },
     defaultEdgeType: 'line',
     edgeProgramClasses: {
       line: EdgeLineProgram,
@@ -51,7 +63,7 @@ export function createRenderer(
     nodeReducer: (nodeId, attrs) => {
       const glow = glowIntensities.get(nodeId) || 0
       const baseSize = (attrs as any).baseSize || attrs.size
-      const baseColor = (attrs as any).baseColor || attrs.color
+      const baseBorderColor = (attrs as any).borderColor || attrs.color
       const neuronType = (attrs as any).neuronType || 'I'
       const isReplacement = Boolean((attrs as any).isReplacement)
       const isGhosted = Boolean((attrs as any).isGhosted)
@@ -72,12 +84,18 @@ export function createRenderer(
         state.selectedNeuron !== nodeId &&
         (graph.hasEdge(state.selectedNeuron!, nodeId) || graph.hasEdge(nodeId, state.selectedNeuron!))
 
-      // Glow effect: boost size and shift color toward glow color
-      let size = baseSize + glow * baseSize * 1.2
-      let color = glow > 0.01 ? lerpColor(baseColor, glowColor, glow * 0.7) : baseColor
+      // Glow effect: boost size and fill the outline with glow color
+      let size = baseSize + glow * baseSize * 1.4
+      // Inner fill: transparent at rest, fills toward glow color when firing
+      let color = glow > 0.01 ? lerpColor(BG_COLOR, glowColor, glow * 0.7) : BG_COLOR
+      // Border: brighten toward glow color at high intensity
+      let borderColor = glow > 0.3
+        ? lerpColor(baseBorderColor, glowColor, (glow - 0.3) * 0.8)
+        : baseBorderColor
 
       if (isGhosted) {
         color = applyAlpha(color, 0.45)
+        borderColor = applyAlpha(borderColor, 0.45)
       }
 
       // Selection/hover dimming
@@ -89,11 +107,13 @@ export function createRenderer(
         size *= 1.15
       }
       if (isActiveFaulty) {
-        color = lerpColor(color, '#F97316', 0.55)
+        borderColor = lerpColor(borderColor, '#F97316', 0.55)
+        color = lerpColor(color, '#F97316', 0.35)
         size *= 1.12
       }
       if (isActiveReplacement) {
-        color = lerpColor(color, '#10B981', 0.55)
+        borderColor = lerpColor(borderColor, '#10B981', 0.55)
+        color = lerpColor(color, '#10B981', 0.35)
         size *= 1.12
       }
 
@@ -101,6 +121,7 @@ export function createRenderer(
         ...attrs,
         size,
         color: alpha < 1 ? applyAlpha(color, alpha) : color,
+        borderColor: alpha < 1 ? applyAlpha(borderColor, alpha) : borderColor,
         zIndex: isSelected ? 2 : glow > 0.01 ? 1 : 0,
       }
     },
@@ -119,6 +140,17 @@ export function createRenderer(
         handoffActive && (source === replacement || target === replacement)
       const touchesFaulty = handoffActive && (source === faulty || target === faulty)
 
+      // Edge glow: inherit glow from source neuron
+      const sourceGlow = glowIntensities.get(source) || 0
+      let edgeColor = EDGE_COLOR
+      let edgeSize = attrs.size
+      if (sourceGlow > 0.05) {
+        const neuronType = graph.getNodeAttribute(source, 'neuronType') || 'I'
+        const glowColor = NEURON_GLOW_COLORS[neuronType] || '#FFF'
+        edgeColor = lerpColor(EDGE_COLOR, glowColor, sourceGlow * 0.7)
+        edgeSize = attrs.size * (1 + sourceGlow * 0.8)
+      }
+
       if (!hasSelection) {
         if (touchesReplacement) {
           return { ...attrs, color: '#10B981', size: attrs.size * 1.35, hidden: false }
@@ -126,7 +158,7 @@ export function createRenderer(
         if (touchesFaulty) {
           return { ...attrs, color: '#F97316', size: attrs.size * 1.2, hidden: false }
         }
-        return { ...attrs, color: EDGE_COLOR, hidden: false }
+        return { ...attrs, color: edgeColor, size: edgeSize, hidden: false }
       }
 
       const isConnected = source === state.selectedNeuron || target === state.selectedNeuron
@@ -150,7 +182,8 @@ export function createRenderer(
 
       return {
         ...attrs,
-        color: isConnected ? '#9CA3AF' : EDGE_COLOR,
+        color: isConnected ? '#9CA3AF' : edgeColor,
+        size: isConnected ? edgeSize : edgeSize,
         hidden: !isConnected,
       }
     },
@@ -182,18 +215,18 @@ function applyGraphData(
   const nodesById = new Map<string, GraphNode>(data.nodes.map((n) => [n.id, n]))
   for (const node of data.nodes) {
     const pos = resolveDisplayPosition(node, positions, nodesById)
-    const baseColor = resolveNodeColor(node)
+    const borderColor = resolveNodeColor(node)
     const sizeMultiplier = node.is_ghosted ? 0.65 : node.is_replacement ? 1.05 : 1
     const baseSize = (3 + node.degree_centrality * 18) * sizeMultiplier
     graph.addNode(node.id, {
       x: pos.x,
       y: pos.y,
       size: baseSize,
-      color: baseColor,
+      color: BG_COLOR,
+      borderColor,
       label: node.id,
-      type: 'circle',
+      type: 'bordered',
       baseSize,
-      baseColor,
       neuronType: node.type,
       isReplacement: Boolean(node.is_replacement),
       isGhosted: Boolean(node.is_ghosted),

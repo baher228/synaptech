@@ -43,6 +43,8 @@ export interface AppState {
   sweepStatus: 'idle' | 'connecting' | 'receiving' | 'done' | 'error'
   sweepProgress: number
   sweepError: string | null
+  behaviourStatus: 'idle' | 'running' | 'done' | 'error'
+  behaviourError: string | null
 }
 
 // ─── Replacement sweep metrics ───
@@ -113,6 +115,89 @@ export interface LiveSimulationResponse {
   firing_summary_hz: LiveFiringSummary
   firing_rates_hz_by_node: Record<string, number>
   top_firing_neurons: TopFiringNeuron[]
+}
+
+// ─── Behaviour assay ───
+
+export type GraphSource = 'canonical' | 'replacement'
+
+export interface BehaviorPerformanceRequest {
+  behavior?: 'forward_locomotion'
+  graph_source?: GraphSource
+  engine?: string
+  neuron_model?: string
+  burn_in_ms?: number
+  duration_ms?: number
+  integration_step_ms?: number
+  include_traces?: boolean
+  protocol?: {
+    targets?: string[]
+    amplitude_pA?: number
+    period_ms?: number
+    duty_cycle?: number
+    start_ms?: number
+    stop_ms?: number | null
+  }
+}
+
+export interface PopulationRateStats {
+  mean_rate_hz: number
+  median_rate_hz: number
+  active_fraction: number
+  per_neuron_rate_hz: Record<string, number>
+}
+
+export interface MotorNeuronFiringPatterns {
+  b_type: PopulationRateStats
+  d_type: PopulationRateStats
+  dorsal_ventral_correlation: number
+  dorsal_ventral_anti_phase_index: number
+  head_to_tail_delay_ms_per_segment: number
+  head_to_tail_fit_r2: number
+  segments_with_activity: number
+}
+
+export interface MuscleCaWaveProxy {
+  available: boolean
+  is_proxy: boolean
+  bin_ms: number
+  tau_ms: number
+  segment_count: number
+  wave_travel_delay_ms_per_segment: number
+  wave_travel_fit_r2: number
+  adjacent_segment_coherence: number
+  dorsal_to_ventral_phase_lag_ms: number
+  mean_wave_amplitude: number
+  time_ms?: number[]
+  dorsal_ca_proxy?: Record<string, number[]>
+  ventral_ca_proxy?: Record<string, number[]>
+}
+
+export interface BehaviorPerformanceResponse {
+  behavior: {
+    behavior_id: string
+    description: string
+    canonical_circuit: {
+      command_interneurons: string[]
+      b_type_motor_neurons: string[]
+      d_type_motor_neurons: string[]
+      stimulus_entry_targets: string[]
+    }
+  }
+  input_protocol: Record<string, unknown>
+  behavioral_readout: {
+    motor_neuron_firing_patterns: MotorNeuronFiringPatterns
+    muscle_ca2_wave_proxy: MuscleCaWaveProxy
+    body_kinematics: { available: boolean; reason?: string }
+  }
+  assay_context: {
+    engine: string
+    neuron_model: string
+    burn_in_ms: number
+    duration_ms: number
+    integration_step_ms: number
+    graph_source?: string
+  }
 }
 
 export interface ReplacementEdgeMigration {

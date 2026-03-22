@@ -12,6 +12,7 @@ export const NEURON_GLOW_COLORS: Record<string, string> = {
 
 export const EDGE_COLOR = '#D1D5DB'
 export const EDGE_HIGHLIGHT_COLOR = '#9CA3AF'
+export const BG_COLOR = '#FAFAFA'
 
 export const TYPE_LABELS: Record<string, string> = {
   S: 'Sensory',
