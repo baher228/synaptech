@@ -1,4 +1,6 @@
 import type {
+  BehaviorPerformanceRequest,
+  BehaviorPerformanceResponse,
   GraphData,
   LiveSimulationResponse,
   ReplacementMode,
@@ -122,6 +124,33 @@ export async function resetReplacement(): Promise<void> {
   if (!response.ok) {
     throw new Error(`Failed to reset replacement graph: ${response.status}`)
   }
+}
+
+// ─── Behaviour assay ───
+
+export async function fetchBehaviorPerformance(
+  req: BehaviorPerformanceRequest = {},
+): Promise<BehaviorPerformanceResponse> {
+  const response = await fetch('/api/simulation/behavior/performance', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      behavior: req.behavior ?? 'forward_locomotion',
+      graph_source: req.graph_source ?? 'canonical',
+      engine: req.engine ?? 'brian2',
+      neuron_model: req.neuron_model ?? 'lif',
+      burn_in_ms: req.burn_in_ms ?? 1500.0,
+      duration_ms: req.duration_ms ?? 4000.0,
+      integration_step_ms: req.integration_step_ms ?? 10.0,
+      include_traces: req.include_traces ?? true,
+      protocol: req.protocol ?? {},
+    }),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText)
+    throw new Error(`Behavior assay failed (${response.status}): ${detail}`)
+  }
+  return response.json() as Promise<BehaviorPerformanceResponse>
 }
 
 // ─── Replacement sweep SSE stream ───

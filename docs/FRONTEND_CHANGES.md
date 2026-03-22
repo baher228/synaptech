@@ -1,0 +1,8 @@
+- less rounded edges, a bit sharper
+- more "glassmorphic"
+- the background to the graoh should be a dot-grid
+- The colors of the graph nodes should be outlines, not filled in. 
+- Nodes and edges should glow when they fire, their color.
+- There should be @Logo.svg instead of the text "Synaptech". 
+- The speed section should be interactive. Just a capsule saying "Speed" until it is hovered over, which displays the options.
+- titles should start with ">" for example ">Replacement Control"

@@ -14,6 +14,8 @@ export const state: AppState = {
   sweepStatus: 'idle',
   sweepProgress: 0,
   sweepError: null,
+  behaviourStatus: 'idle',
+  behaviourError: null,
 }
 
 export function on(event: string, fn: Listener): () => void {
