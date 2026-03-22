@@ -11,6 +11,9 @@ export const state: AppState = {
   activeFaultyNeuron: null,
   activeReplacementNeuron: null,
   replacementStatus: null,
+  sweepStatus: 'idle',
+  sweepProgress: 0,
+  sweepError: null,
 }
 
 export function on(event: string, fn: Listener): () => void {

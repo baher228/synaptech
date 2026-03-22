@@ -103,11 +103,13 @@ body {
   box-shadow: var(--shadow);
 }
 
-.live-status {
+/* ─── Metrics panel (replaces live-status) ─── */
+
+.metrics-panel {
   position: absolute;
   right: 28px;
   bottom: 28px;
-  max-width: min(420px, calc(100vw - 56px));
+  width: min(420px, calc(100vw - 56px));
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -118,13 +120,11 @@ body {
   border: 1px solid var(--glass-border);
   border-radius: 14px;
   box-shadow: var(--shadow);
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
 }
 
-.live-status.live-status-error {
-  border-color: rgba(245, 158, 11, 0.55);
-}
-
-.live-title {
+.metrics-title {
   font-family: var(--mono);
   font-size: 0.72rem;
   font-weight: 500;
@@ -133,11 +133,149 @@ body {
   letter-spacing: 0.08em;
 }
 
-.live-line {
+.metrics-line {
   font-family: var(--mono);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: var(--text-muted);
   line-height: 1.35;
+}
+
+.metrics-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.metrics-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metrics-fraction-val {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.metrics-select {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.metrics-range {
+  width: 100%;
+  accent-color: var(--interneuron);
+}
+
+.metrics-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.metrics-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+}
+
+.metrics-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.metrics-btn-start {
+  border-color: var(--sensory);
+}
+
+.metrics-btn-start:hover:not(:disabled) {
+  background: #f0f9ff;
+}
+
+.metrics-btn-cancel {
+  border-color: #fca5a5;
+}
+
+.metrics-btn-cancel:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #f87171;
+}
+
+.metrics-progress {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.metrics-progress-bar {
+  height: 100%;
+  background: var(--interneuron);
+  border-radius: 2px;
+  transition: width 150ms ease;
+}
+
+.metrics-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.metrics-chart-slot {
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* Override uPlot defaults */
+.metrics-chart-slot .u-wrap {
+  background: transparent !important;
+}
+
+.metrics-chart-slot .u-title {
+  font-family: var(--mono) !important;
+  font-size: 0.62rem !important;
+  font-weight: 500 !important;
+  color: var(--text-muted) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 0 0 !important;
+}
+
+.metrics-chart-slot .u-legend {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  padding: 2px 0;
+}
+
+.metrics-chart-slot .u-legend .u-series:first-child {
+  display: none;
+}
+
+.metrics-btn-reset {
+  border-color: #fca5a5;
+}
+
+.metrics-btn-reset:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #f87171;
 }
 
 .replacement-control {
@@ -459,8 +597,10 @@ body {
     bottom: 12px;
   }
 
-  .live-status {
+  .metrics-panel {
     right: 12px;
     bottom: 12px;
+    width: min(96vw, 420px);
+    max-height: 50vh;
   }
 }

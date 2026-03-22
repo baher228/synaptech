@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import random as stdlib_random
 from dataclasses import asdict, dataclass, field
-from typing import Literal
+from typing import Generator, Literal
 
 import networkx as nx
 import numpy as np
@@ -277,3 +277,194 @@ def run_replacement_sweep(
         baseline=baseline.to_dict(),
         steps=steps,
     )
+
+
+def run_replacement_sweep_stream(
+    graph: nx.DiGraph,
+    target_neurons: list[str],
+    engine_name: str = "brian2",
+    neuron_model: str = "hh",
+    burn_in_ms: float = 2000.0,
+    baseline_ms: float = 5000.0,
+    step_ms: float = 500.0,
+    edges_per_step: int = 1,
+    seed: int | None = None,
+) -> Generator[dict, None, None]:
+    """Streaming version of :func:`run_replacement_sweep`.
+
+    Yields SSE-ready dicts: baseline event, then one step event per
+    edge-migration batch, then a done event.
+    """
+    rng = stdlib_random.Random(seed)
+    engine = get_engine(engine_name)
+    working_graph = graph.copy()
+    engine.build(working_graph, neuron_model=neuron_model)
+
+    sensory, motor = _neuron_groups(graph)
+    b_class = list(B_CLASS_MOTOR_NEURONS)
+
+    # Estimate total steps for progress reporting
+    import math
+    total_steps = sum(
+        math.ceil((graph.in_degree(n) + graph.out_degree(n)) / edges_per_step)
+        for n in target_neurons
+    )
+
+    # Burn-in + baseline capture
+    engine.run(burn_in_ms)
+    engine.run(baseline_ms)
+    bl_trains = engine.get_spike_trains()
+    bl_voltages = engine.get_voltage_matrix(window_ms=baseline_ms)
+    baseline = compute_baseline(
+        bl_trains, baseline_ms, sensory, motor,
+        voltages=bl_voltages, b_class_names=b_class,
+    )
+
+    yield {
+        "type": "baseline",
+        "data": baseline.to_dict(),
+        "strategy": "one_by_one_replacement",
+        "neuron_model": neuron_model,
+        "replacement_order": target_neurons,
+        "total_steps": total_steps,
+    }
+
+    # Replacement loop
+    service = ReplacementService(graph=working_graph, engine=engine)
+    global_step = 0
+
+    for neuron_name in target_neurons:
+        session = service.start_replacement(
+            faulty_neuron=neuron_name,
+            edge_order="random",
+            seed=rng.randint(0, 10**9),
+        )
+        total_edges = len(session.pending) + len(session.completed)
+
+        while session.status != "completed":
+            session = service.step_replacement(
+                session.session_id,
+                edges_to_migrate=edges_per_step,
+            )
+            engine.run(step_ms)
+
+            trains = engine.get_spike_trains()
+            voltages = engine.get_voltage_matrix(window_ms=step_ms)
+
+            rates = firing_rate_distribution(trains, step_ms)
+            rate_vals = np.array(list(rates.values()))
+            pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
+
+            step = StepMetrics(
+                step_index=global_step,
+                neuron_being_replaced=neuron_name,
+                edges_migrated=len(session.completed),
+                total_edges=total_edges,
+                kuramoto_r=kuramoto_order_parameter(trains, b_class, step_ms),
+                pca_deviation=pca_d,
+                pca_sigma=pca_s,
+                voltage_entropy=voltage_state_entropy(voltages, step_ms),
+                firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
+                synchrony=network_synchrony(trains, step_ms),
+                pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
+            )
+            yield {"type": "step", "data": step.to_dict()}
+            global_step += 1
+
+    yield {"type": "done"}
+
+
+def run_live_sweep_stream(
+    sim: object,
+    target_neurons: list[str],
+    step_ms: float = 200.0,
+    baseline_ms: float = 1000.0,
+    edges_per_step: int = 5,
+    seed: int | None = None,
+) -> Generator[dict, None, None]:
+    """Run a replacement sweep on the persistent simulation.
+
+    Uses the already-running engine — no build or burn-in needed.
+    Captures a quick baseline from the current state, then replaces
+    neurons one-by-one on the live engine.
+    """
+    rng = stdlib_random.Random(seed)
+    engine = sim.engine  # type: ignore[attr-defined]
+    graph = sim.graph  # type: ignore[attr-defined]
+
+    sensory, motor = _neuron_groups(graph)
+    b_class = list(B_CLASS_MOTOR_NEURONS)
+
+    import math
+    total_steps = sum(
+        math.ceil((graph.in_degree(n) + graph.out_degree(n)) / edges_per_step)
+        for n in target_neurons
+        if graph.has_node(n)
+    )
+
+    # Quick baseline from current state (no rebuild)
+    engine.run(baseline_ms)
+    bl_trains = engine.get_spike_trains()
+    bl_voltages = engine.get_voltage_matrix(window_ms=baseline_ms)
+    baseline = compute_baseline(
+        bl_trains, baseline_ms, sensory, motor,
+        voltages=bl_voltages, b_class_names=b_class,
+    )
+
+    yield {
+        "type": "baseline",
+        "data": baseline.to_dict(),
+        "strategy": "one_by_one_live",
+        "neuron_model": "lif",
+        "replacement_order": target_neurons,
+        "total_steps": total_steps,
+    }
+
+    # Replacement loop on the live engine
+    service = ReplacementService(graph=graph, engine=engine)
+    global_step = 0
+
+    for neuron_name in target_neurons:
+        if not graph.has_node(neuron_name):
+            continue
+        if graph.nodes[neuron_name].get("is_ghosted"):
+            continue
+
+        session = service.start_replacement(
+            faulty_neuron=neuron_name,
+            edge_order="random",
+            seed=rng.randint(0, 10**9),
+        )
+        total_edges = len(session.pending) + len(session.completed)
+
+        while session.status != "completed":
+            session = service.step_replacement(
+                session.session_id,
+                edges_to_migrate=edges_per_step,
+            )
+            engine.run(step_ms)
+
+            trains = engine.get_spike_trains()
+            voltages = engine.get_voltage_matrix(window_ms=step_ms)
+
+            rates = firing_rate_distribution(trains, step_ms)
+            rate_vals = np.array(list(rates.values()))
+            pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
+
+            step = StepMetrics(
+                step_index=global_step,
+                neuron_being_replaced=neuron_name,
+                edges_migrated=len(session.completed),
+                total_edges=total_edges,
+                kuramoto_r=kuramoto_order_parameter(trains, b_class, step_ms),
+                pca_deviation=pca_d,
+                pca_sigma=pca_s,
+                voltage_entropy=voltage_state_entropy(voltages, step_ms),
+                firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
+                synchrony=network_synchrony(trains, step_ms),
+                pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
+            )
+            yield {"type": "step", "data": step.to_dict()}
+            global_step += 1
+
+    yield {"type": "done"}

@@ -5,7 +5,7 @@ import { state } from '../state'
 import type { LiveSimulationResponse, SpikeData } from '../types'
 
 const BASE_INTERVAL_MS = 50
-const LIVE_REFRESH_MS = 12_000
+const LIVE_REFRESH_MS = 2_000
 const BASE_FIRE_PROBABILITY = 0.04
 const MAX_STEP_FIRE_PROBABILITY = 0.95
 
@@ -153,14 +153,12 @@ function createLivePollingEngine(
 
   async function refreshLiveModel(): Promise<void> {
     if (isFetchingLive) return
+    // Don't compete with a running sweep for the shared engine
+    if (state.sweepStatus === 'connecting' || state.sweepStatus === 'receiving') return
     isFetchingLive = true
 
     try {
-      const payload = await fetchLiveSimulation({
-        durationMs: 2000,
-        burnInMs: 500,
-        seed: Math.floor(Date.now() % 1_000_000),
-      })
+      const payload = await fetchLiveSimulation()
       setProbabilitiesFromLiveRates(payload.firing_rates_hz_by_node)
       hasLiveData = true
       options.onLiveUpdate?.(payload)

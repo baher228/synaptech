@@ -3,6 +3,9 @@ import type {
   LiveSimulationResponse,
   ReplacementSession,
   SpikeData,
+  SweepBaselineEvent,
+  SweepStepEvent,
+  SweepStrategy,
 } from './types'
 
 export async function fetchGraphData(): Promise<GraphData> {
@@ -13,22 +16,8 @@ export async function fetchGraphData(): Promise<GraphData> {
   return response.json() as Promise<GraphData>
 }
 
-export async function fetchLiveSimulation(
-  params: { durationMs?: number; burnInMs?: number; seed?: number } = {},
-): Promise<LiveSimulationResponse> {
-  const search = new URLSearchParams()
-  if (params.durationMs !== undefined) {
-    search.set('duration_ms', String(params.durationMs))
-  }
-  if (params.burnInMs !== undefined) {
-    search.set('burn_in_ms', String(params.burnInMs))
-  }
-  if (params.seed !== undefined) {
-    search.set('seed', String(params.seed))
-  }
-
-  const query = search.toString()
-  const response = await fetch(`/api/simulation/live${query ? `?${query}` : ''}`)
+export async function fetchLiveSimulation(): Promise<LiveSimulationResponse> {
+  const response = await fetch('/api/simulation/live')
   if (!response.ok) {
     throw new Error(`Failed to fetch live simulation: ${response.status}`)
   }
@@ -113,4 +102,55 @@ export async function resetReplacement(): Promise<void> {
   if (!response.ok) {
     throw new Error(`Failed to reset replacement graph: ${response.status}`)
   }
+}
+
+// ─── Replacement sweep SSE stream ───
+
+export interface SweepStreamParams {
+  fraction?: number
+  strategy?: SweepStrategy
+  neuronModel?: string
+  stepMs?: number
+  edgesPerStep?: number
+  seed?: number
+}
+
+export interface SweepStreamCallbacks {
+  onBaseline: (event: SweepBaselineEvent) => void
+  onStep: (event: SweepStepEvent) => void
+  onDone: () => void
+  onError: (error: string) => void
+}
+
+export function connectSweepStream(
+  params: SweepStreamParams,
+  callbacks: SweepStreamCallbacks,
+): { close: () => void } {
+  const search = new URLSearchParams()
+  if (params.fraction !== undefined) search.set('fraction', String(params.fraction))
+  if (params.strategy) search.set('strategy', params.strategy)
+  if (params.neuronModel) search.set('neuron_model', params.neuronModel)
+  if (params.stepMs !== undefined) search.set('step_ms', String(params.stepMs))
+  if (params.edgesPerStep !== undefined) search.set('edges_per_step', String(params.edgesPerStep))
+  if (params.seed !== undefined) search.set('seed', String(params.seed))
+
+  const url = `/api/simulation/replacement-sweep/stream?${search.toString()}`
+  const source = new EventSource(url)
+
+  source.addEventListener('baseline', (e: MessageEvent) => {
+    callbacks.onBaseline(JSON.parse(e.data) as SweepBaselineEvent)
+  })
+  source.addEventListener('step', (e: MessageEvent) => {
+    callbacks.onStep(JSON.parse(e.data) as SweepStepEvent)
+  })
+  source.addEventListener('done', () => {
+    source.close()
+    callbacks.onDone()
+  })
+  source.onerror = () => {
+    source.close()
+    callbacks.onError('Connection to sweep stream lost')
+  }
+
+  return { close: () => source.close() }
 }

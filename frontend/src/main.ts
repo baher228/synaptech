@@ -9,7 +9,8 @@ import { createTimescaleControl } from './ui/timescale-control'
 import { createNeuronTooltip } from './ui/neuron-tooltip'
 import { createLegend } from './ui/legend'
 import { createReplacementControl } from './ui/replacement-control'
-import type { LiveSimulationResponse, SpikeData } from './types'
+import { createMetricsPanel } from './ui/metrics-panel'
+import type { SpikeData } from './types'
 
 async function boot(): Promise<void> {
   const graphContainer = document.getElementById('graph-container')
@@ -42,14 +43,8 @@ async function boot(): Promise<void> {
     // Wire up interactions (click, hover)
     setupInteractions(ctx)
 
-    const liveStatus = document.createElement('div')
-    liveStatus.className = 'live-status'
-    liveStatus.innerHTML = `
-      <div class="live-title">Live Simulation</div>
-      <div class="live-line">Status: Connecting...</div>
-      <div class="live-line">Awaiting backend stream</div>
-    `
-    uiOverlay.appendChild(liveStatus)
+    // Mount metrics panel first so we can feed it live data
+    const metricsPanel = createMetricsPanel(uiOverlay)
 
     let spikeData: SpikeData | undefined
     try {
@@ -58,27 +53,19 @@ async function boot(): Promise<void> {
       console.log(
         `Loaded spike data: ${spikeData.active_count}/${spikeData.neuron_count} active neurons over ${spikeData.duration_ms}ms`,
       )
-      if (spikeData && Object.keys(spikeData.spike_trains).length > 0) {
-        liveStatus.innerHTML = `
-          <div class="live-title">Live Simulation</div>
-          <div class="live-line">Status: Replay mode</div>
-          <div class="live-line">Playing ${spikeData.active_count} active neurons / ${spikeData.neuron_count} total</div>
-        `
-      }
     } catch {
       console.warn('Simulation endpoint unavailable — using live / fallback firing')
     }
 
     const firingEngine = createFiringEngine(ctx, {
       spikeData,
-      onLiveUpdate: (payload) => renderLiveStatus(liveStatus, payload),
-      onLiveError: (message) => renderLiveError(liveStatus, message),
+      onLiveUpdate: (payload) => metricsPanel.onLiveUpdate(payload),
     })
     const animationLoop = createAnimationLoop(ctx)
     firingEngine.start()
     animationLoop.start()
 
-    // Mount UI overlays
+    // Mount remaining UI overlays
     const brand = document.createElement('div')
     brand.className = 'brand'
     brand.innerHTML = `
@@ -98,36 +85,6 @@ async function boot(): Promise<void> {
     loading.innerHTML = `
       <span class="loading-text">Failed to load connectome data.</span>
       <span class="loading-text" style="font-size: 0.75rem; opacity: 0.6">${err instanceof Error ? err.message : 'Unknown error'}</span>
-    `
-  }
-}
-
-function renderLiveStatus(el: HTMLElement, payload: LiveSimulationResponse): void {
-  const summary = payload.firing_summary_hz
-  const top = payload.top_firing_neurons[0]
-
-  el.classList.remove('live-status-error')
-  el.innerHTML = `
-    <div class="live-title">Live Simulation</div>
-    <div class="live-line">Status: Live backend data</div>
-    <div class="live-line">Overall: ${summary.overall_mean_hz.toFixed(2)} Hz</div>
-    <div class="live-line">Sensory/Inter/Motor: ${summary.sensory_mean_hz.toFixed(2)} / ${summary.interneuron_mean_hz.toFixed(2)} / ${summary.motor_mean_hz.toFixed(2)} Hz</div>
-    <div class="live-line">Active neurons: ${(summary.active_fraction * 100).toFixed(1)}%</div>
-    <div class="live-line">Population spike rate: ${payload.population_spike_rate_hz.toFixed(2)} Hz</div>
-    <div class="live-line">Top firing neuron: ${top ? `${top.name} (${top.firing_rate_hz.toFixed(2)} Hz)` : 'n/a'}</div>
-  `
-}
-
-function renderLiveError(el: HTMLElement, message: string): void {
-  if (
-    !el.textContent?.includes('Live backend data') &&
-    !el.textContent?.includes('Replay mode')
-  ) {
-    el.classList.add('live-status-error')
-    el.innerHTML = `
-      <div class="live-title">Live Simulation</div>
-      <div class="live-line">Status: Fallback mode</div>
-      <div class="live-line">${message}</div>
     `
   }
 }

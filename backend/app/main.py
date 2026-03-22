@@ -16,10 +16,16 @@ from app.connectome import (
 )
 from app.interventions.fault_detection import FaultDetectionService
 from app.interventions.replacement_service import ReplacementService
-from app.interventions.sweep import Intervention, run_sweep, run_replacement_sweep
+from app.interventions.sweep import (
+    Intervention,
+    run_sweep,
+    run_replacement_sweep,
+    run_replacement_sweep_stream,
+    run_live_sweep_stream,
+)
 from app.metrics.metrics import compute_baseline, failure_score
-from app.simulation import run_live_activity
 from app.simulation.factory import get_engine, list_engines
+from app.simulation.session import PersistentSimulation
 
 app = FastAPI(title="Synaptech API", version="0.2.0")
 
@@ -52,6 +58,11 @@ def _fault_detection_service() -> FaultDetectionService:
     return FaultDetectionService()
 
 
+@lru_cache(maxsize=1)
+def _persistent_simulation() -> PersistentSimulation:
+    return PersistentSimulation(get_connectome_graph())
+
+
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
@@ -73,16 +84,19 @@ def connectome_summary() -> dict[str, object]:
 
 
 @app.get("/api/simulation/live")
-def live_simulation(
-    duration_ms: float = Query(default=2_000.0, ge=100.0, le=30_000.0),
-    burn_in_ms: float = Query(default=500.0, ge=0.0, le=30_000.0),
-    seed: int | None = Query(default=7),
-) -> dict[str, object]:
-    return run_live_activity(
-        duration_ms=duration_ms,
-        burn_in_ms=burn_in_ms,
-        seed=seed,
-    )
+async def live_simulation(
+    step_ms: float = Query(default=500.0, ge=50.0, le=5000.0),
+) -> dict:
+    """Advance the persistent simulation and return current firing rates."""
+    sim = _persistent_simulation()
+    return sim.step(step_ms)
+
+
+@app.post("/api/simulation/session/reset")
+async def simulation_session_reset(neuron_model: str = "lif") -> dict:
+    """Reset the persistent simulation (rebuilds from scratch)."""
+    _persistent_simulation.cache_clear()
+    return {"status": "reset"}
 
 
 # ------------------------------------------------------------------ #
@@ -360,20 +374,57 @@ def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
     return result.to_dict()
 
 
+@app.get("/api/simulation/replacement-sweep/stream")
+def simulation_replacement_sweep_stream(
+    fraction: float = Query(0.1, ge=0.01, le=1.0),
+    strategy: str = "random",
+    step_ms: float = 200.0,
+    baseline_ms: float = 1000.0,
+    edges_per_step: int = Query(5, ge=1, le=50),
+    seed: int | None = None,
+):
+    """SSE endpoint: runs replacement sweep on the persistent simulation.
+
+    Uses the already-running engine — no build or burn-in overhead.
+    """
+    import json
+    from starlette.responses import StreamingResponse
+
+    sim = _persistent_simulation()
+    detector = FaultDetectionService()
+    targets = detector.select_targets_by_fraction(
+        graph=sim.graph,
+        fraction=fraction,
+        seed=seed,
+        strategy=strategy,
+    )
+
+    def sse_generator():
+        for event in run_live_sweep_stream(
+            sim=sim,
+            target_neurons=targets,
+            step_ms=step_ms,
+            baseline_ms=baseline_ms,
+            edges_per_step=edges_per_step,
+            seed=seed,
+        ):
+            yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/api/simulation/spikes")
-def simulation_spikes(
-    engine: str = "brian2",
-    neuron_model: str = "lif",
+async def simulation_spikes(
     duration_ms: float = 5000.0,
-    burn_in_ms: float = 1000.0,
 ) -> dict:
-    """Run a simulation and return raw spike trains for frontend playback."""
-    graph = get_connectome_graph()
-    eng = get_engine(engine)
-    eng.build(graph, neuron_model=neuron_model)
-    eng.run(burn_in_ms)
-    eng.run(duration_ms)
-    trains = eng.get_spike_trains()
+    """Run the persistent simulation forward and return spike trains."""
+    sim = _persistent_simulation()
+    result = sim.step(duration_ms)
+    trains = sim.engine.get_spike_trains()
     # Strip neurons with no spikes to reduce payload
     sparse = {n: times for n, times in trains.items() if times}
     return {

@@ -40,6 +40,57 @@ export interface AppState {
   activeFaultyNeuron: string | null
   activeReplacementNeuron: string | null
   replacementStatus: 'in_progress' | 'completed' | null
+  sweepStatus: 'idle' | 'connecting' | 'receiving' | 'done' | 'error'
+  sweepProgress: number
+  sweepError: string | null
+}
+
+// ─── Replacement sweep metrics ───
+
+export type SweepStrategy = 'random' | 'hub_first' | 'periphery_first'
+
+export interface StepMetrics {
+  step_index: number
+  neuron_being_replaced: string
+  edges_migrated: number
+  total_edges: number
+  kuramoto_r: number
+  pca_deviation: number
+  pca_sigma: number
+  voltage_entropy: number
+  firing_rate_mean: number
+  synchrony: number
+  pathway_fidelity_val: number
+}
+
+export interface SweepBaseline {
+  mean_firing_rate: number
+  std_firing_rate: number
+  synchrony: number
+  entropy: number
+  pathway_fidelity: number
+  kuramoto_r: number
+  pca_deviation: number
+  pca_sigma: number
+  voltage_entropy: number
+}
+
+export interface SweepBaselineEvent {
+  type: 'baseline'
+  data: SweepBaseline
+  strategy: string
+  neuron_model: string
+  replacement_order: string[]
+  total_steps: number
+}
+
+export interface SweepStepEvent {
+  type: 'step'
+  data: StepMetrics
+}
+
+export interface SweepDoneEvent {
+  type: 'done'
 }
 
 export interface LiveFiringSummary {
