@@ -4,10 +4,11 @@ import {
   resetReplacement,
   startReplacement,
   stepReplacement,
+  tickOU,
 } from '../api'
 import { replaceRendererData, type RendererContext } from '../graph/renderer'
 import { emit, state } from '../state'
-import type { ReplacementSession } from '../types'
+import type { ReplacementMode, ReplacementSession } from '../types'
 
 const AUTO_STEP_SIZE = 8
 const AUTO_STEP_DELAY_MS = 140
@@ -25,6 +26,9 @@ export function createReplacementControl(
   let busy = false
   let autoRunning = false
   let statusText = 'Ready'
+  let replacementMode: ReplacementMode = 'instant'
+  let ouTheta = 2.0
+  let ouSigma = 0.3
 
   function syncReplacementFocus(nextSession: ReplacementSession | null): void {
     if (!nextSession) {
@@ -63,23 +67,43 @@ export function createReplacementControl(
     const activeFaulty = selected || candidateFaulty || session?.faulty_neuron || 'n/a'
     const activeReplacement = session?.replacement_neuron || 'n/a'
     const canStep = Boolean(session && session.status !== 'completed')
+    const isOU = session?.mode === 'ou'
     const nextEdge = session?.next_edge
       ? `${session.next_edge.old_source} -> ${session.next_edge.old_target} => ${session.next_edge.new_source} -> ${session.next_edge.new_target}`
       : 'n/a'
 
+    const ouConvergence = session?.ou_convergence !== undefined
+      ? `${(session.ou_convergence * 100).toFixed(1)}%`
+      : null
+
+    const progressLine = isOU
+      ? `OU convergence: ${ouConvergence ?? 'n/a'}`
+      : `${session ? `${session.completed_count} migrated / ${session.pending_count} pending` : 'not started'}`
+
     el.innerHTML = `
       <div class="replacement-title">Replacement Control</div>
       <div class="replacement-line">Status: ${statusText}</div>
+      <div class="replacement-line">Mode: ${replacementMode === 'ou' ? 'OU Gradual' : 'Instant'}</div>
       <div class="replacement-line">Selected neuron: ${selected ?? 'none'}</div>
       <div class="replacement-line">Faulty neuron: ${activeFaulty}</div>
       <div class="replacement-line">Replacement neuron: ${activeReplacement}</div>
       <div class="replacement-line">Session: ${session?.session_id ?? 'none'}</div>
-      <div class="replacement-line">Progress: ${session ? `${session.completed_count} migrated / ${session.pending_count} pending` : 'not started'}</div>
-      <div class="replacement-line replacement-next">Next edge: ${nextEdge}</div>
+      <div class="replacement-line">Progress: ${progressLine}</div>
+      ${!isOU ? `<div class="replacement-line replacement-next">Next edge: ${nextEdge}</div>` : ''}
+      <div class="replacement-mode-toggle">
+        <label><input type="radio" name="rep-mode" value="instant" ${replacementMode === 'instant' ? 'checked' : ''} ${session ? 'disabled' : ''} /> Instant</label>
+        <label><input type="radio" name="rep-mode" value="ou" ${replacementMode === 'ou' ? 'checked' : ''} ${session ? 'disabled' : ''} /> OU Gradual</label>
+      </div>
+      ${replacementMode === 'ou' ? `
+      <div class="replacement-ou-params">
+        <label>Theta (speed): <input type="range" min="0.5" max="5.0" step="0.1" value="${ouTheta}" data-param="theta" ${session ? 'disabled' : ''} /> <span>${ouTheta.toFixed(1)}</span></label>
+        <label>Sigma (noise): <input type="range" min="0.1" max="1.0" step="0.05" value="${ouSigma}" data-param="sigma" ${session ? 'disabled' : ''} /> <span>${ouSigma.toFixed(2)}</span></label>
+      </div>
+      ` : ''}
       <div class="replacement-actions">
         <button class="replacement-btn" data-action="pick" ${busy || autoRunning ? 'disabled' : ''}>Pick Random Faulty</button>
         <button class="replacement-btn" data-action="start" ${busy || autoRunning ? 'disabled' : ''}>Start Replacement</button>
-        <button class="replacement-btn" data-action="step" ${busy || autoRunning || !canStep ? 'disabled' : ''}>Migrate One Edge</button>
+        ${!isOU ? `<button class="replacement-btn" data-action="step" ${busy || autoRunning || !canStep ? 'disabled' : ''}>Migrate One Edge</button>` : ''}
         <button class="replacement-btn" data-action="auto" ${busy || autoRunning || !canStep ? 'disabled' : ''}>Auto Complete</button>
         <button class="replacement-btn replacement-btn-reset" data-action="reset" ${busy || autoRunning ? 'disabled' : ''}>Reset Graph</button>
       </div>
@@ -113,6 +137,9 @@ export function createReplacementControl(
       session = await startReplacement({
         faultyNeuron: faulty,
         edgeOrder: 'random',
+        mode: replacementMode,
+        theta: replacementMode === 'ou' ? ouTheta : undefined,
+        sigma: replacementMode === 'ou' ? ouSigma : undefined,
       })
       syncReplacementFocus(session)
       candidateFaulty = session.faulty_neuron
@@ -151,11 +178,18 @@ export function createReplacementControl(
   async function autoComplete(): Promise<void> {
     if (!session || session.status === 'completed') return
     autoRunning = true
-    statusText = `Auto-migrating edges for ${session.faulty_neuron}...`
+    const isOU = session.mode === 'ou'
+    statusText = isOU
+      ? `OU convergence running for ${session.faulty_neuron}...`
+      : `Auto-migrating edges for ${session.faulty_neuron}...`
     render()
     try {
       while (session && session.status !== 'completed') {
-        session = await stepReplacement(session.session_id, AUTO_STEP_SIZE)
+        if (isOU) {
+          session = await tickOU(session.session_id)
+        } else {
+          session = await stepReplacement(session.session_id, AUTO_STEP_SIZE)
+        }
         syncReplacementFocus(session)
         await refreshGraph()
         render()
@@ -217,6 +251,26 @@ export function createReplacementControl(
     }
     if (action === 'reset') {
       void resetGraph()
+    }
+  })
+
+  el.addEventListener('change', (event) => {
+    const target = event.target as HTMLInputElement
+    if (target.name === 'rep-mode') {
+      replacementMode = target.value as ReplacementMode
+      render()
+    }
+  })
+
+  el.addEventListener('input', (event) => {
+    const target = event.target as HTMLInputElement
+    if (target.dataset.param === 'theta') {
+      ouTheta = parseFloat(target.value)
+      render()
+    }
+    if (target.dataset.param === 'sigma') {
+      ouSigma = parseFloat(target.value)
+      render()
     }
   })
 

@@ -1,6 +1,7 @@
 import type {
   GraphData,
   LiveSimulationResponse,
+  ReplacementMode,
   ReplacementSession,
   SpikeData,
   SweepBaselineEvent,
@@ -61,6 +62,9 @@ export async function startReplacement(input: {
   faultyNeuron?: string
   edgeOrder?: 'random' | 'deterministic'
   seed?: number
+  mode?: ReplacementMode
+  theta?: number
+  sigma?: number
 }): Promise<ReplacementSession> {
   const response = await fetch('/api/replacement/start', {
     method: 'POST',
@@ -69,10 +73,26 @@ export async function startReplacement(input: {
       faulty_neuron: input.faultyNeuron ?? null,
       edge_order: input.edgeOrder ?? 'random',
       seed: input.seed ?? null,
+      mode: input.mode ?? 'instant',
+      theta: input.theta ?? null,
+      sigma: input.sigma ?? null,
     }),
   })
   if (!response.ok) {
     throw new Error(`Failed to start replacement: ${response.status}`)
+  }
+  const payload = (await response.json()) as { session: ReplacementSession }
+  return payload.session
+}
+
+export async function tickOU(sessionId: string): Promise<ReplacementSession> {
+  const response = await fetch('/api/replacement/tick-ou', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to tick OU replacement: ${response.status}`)
   }
   const payload = (await response.json()) as { session: ReplacementSession }
   return payload.session
@@ -113,6 +133,9 @@ export interface SweepStreamParams {
   stepMs?: number
   edgesPerStep?: number
   seed?: number
+  replacementMode?: ReplacementMode
+  ouTheta?: number
+  ouSigma?: number
 }
 
 export interface SweepStreamCallbacks {
@@ -133,6 +156,9 @@ export function connectSweepStream(
   if (params.stepMs !== undefined) search.set('step_ms', String(params.stepMs))
   if (params.edgesPerStep !== undefined) search.set('edges_per_step', String(params.edgesPerStep))
   if (params.seed !== undefined) search.set('seed', String(params.seed))
+  if (params.replacementMode) search.set('replacement_mode', params.replacementMode)
+  if (params.ouTheta !== undefined) search.set('ou_theta', String(params.ouTheta))
+  if (params.ouSigma !== undefined) search.set('ou_sigma', String(params.ouSigma))
 
   const url = `/api/simulation/replacement-sweep/stream?${search.toString()}`
   const source = new EventSource(url)

@@ -108,6 +108,9 @@ class ReplacementStartRequest(BaseModel):
     faulty_neuron: str | None = None
     edge_order: Literal["random", "deterministic"] = "random"
     seed: int | None = None
+    mode: Literal["instant", "ou"] = "instant"
+    theta: float | None = None
+    sigma: float | None = None
 
 
 class ReplacementStepRequest(BaseModel):
@@ -155,6 +158,9 @@ def replacement_start(req: ReplacementStartRequest) -> dict[str, object]:
         faulty_neuron=faulty,
         edge_order=req.edge_order,
         seed=req.seed,
+        mode=req.mode,
+        theta=req.theta,
+        sigma=req.sigma,
     )
     return {"session": session.to_dict()}
 
@@ -166,6 +172,17 @@ def replacement_step(req: ReplacementStepRequest) -> dict[str, object]:
         session_id=req.session_id,
         edges_to_migrate=req.edges_to_migrate,
     )
+    return {"session": session.to_dict()}
+
+
+class ReplacementTickOURequest(BaseModel):
+    session_id: str
+
+
+@app.post("/api/replacement/tick-ou")
+def replacement_tick_ou(req: ReplacementTickOURequest) -> dict[str, object]:
+    service = _replacement_service()
+    session = service.tick_ou(session_id=req.session_id)
     return {"session": session.to_dict()}
 
 
@@ -347,6 +364,9 @@ class ReplacementSweepRequest(BaseModel):
     step_ms: float = 500.0
     edges_per_step: int = Field(1, ge=1, le=50)
     seed: int | None = None
+    replacement_mode: Literal["instant", "ou"] = "instant"
+    ou_theta: float | None = None
+    ou_sigma: float | None = None
 
 
 @app.post("/api/simulation/replacement-sweep")
@@ -370,6 +390,9 @@ def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
         step_ms=req.step_ms,
         edges_per_step=req.edges_per_step,
         seed=req.seed,
+        replacement_mode=req.replacement_mode,
+        ou_theta=req.ou_theta,
+        ou_sigma=req.ou_sigma,
     )
     return result.to_dict()
 
@@ -382,6 +405,9 @@ def simulation_replacement_sweep_stream(
     baseline_ms: float = 1000.0,
     edges_per_step: int = Query(5, ge=1, le=50),
     seed: int | None = None,
+    replacement_mode: str = "instant",
+    ou_theta: float | None = None,
+    ou_sigma: float | None = None,
 ):
     """SSE endpoint: runs replacement sweep on the persistent simulation.
 
@@ -407,6 +433,9 @@ def simulation_replacement_sweep_stream(
             baseline_ms=baseline_ms,
             edges_per_step=edges_per_step,
             seed=seed,
+            replacement_mode=replacement_mode,
+            ou_theta=ou_theta,
+            ou_sigma=ou_sigma,
         ):
             yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
 

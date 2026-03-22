@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import random as stdlib_random
+from typing import Literal
 
 import networkx as nx
 
 from app.connectome import get_connectome_graph
 from app.interventions.fault_detection import FaultDetectionService
+from app.interventions.ou_process import OUReplacementManager
 from app.simulation.protocol import SimulationEngine
 
 
@@ -41,10 +43,13 @@ class ReplacementSession:
     pending: list[EdgeMigration] = field(default_factory=list)
     completed: list[EdgeMigration] = field(default_factory=list)
     status: str = "in_progress"
+    mode: Literal["instant", "ou"] = "instant"
+    ou_manager: OUReplacementManager | None = None
+    ou_params: dict | None = None
 
     def to_dict(self) -> dict[str, object]:
         next_edge = self.pending[0].to_dict() if self.pending else None
-        return {
+        d: dict[str, object] = {
             "session_id": self.session_id,
             "faulty_neuron": self.faulty_neuron,
             "replacement_neuron": self.replacement_neuron,
@@ -53,7 +58,13 @@ class ReplacementSession:
             "completed_count": len(self.completed),
             "next_edge": next_edge,
             "completed_edges": [m.to_dict() for m in self.completed],
+            "mode": self.mode,
         }
+        if self.ou_params:
+            d["ou_params"] = self.ou_params
+        if self.ou_manager is not None:
+            d["ou_convergence"] = self.ou_manager.convergence_fraction()
+        return d
 
 
 class ReplacementService:
@@ -89,6 +100,9 @@ class ReplacementService:
         faulty_neuron: str,
         edge_order: str = "random",
         seed: int | None = None,
+        mode: Literal["instant", "ou"] = "instant",
+        theta: float | None = None,
+        sigma: float | None = None,
     ) -> ReplacementSession:
         if faulty_neuron not in self.graph:
             raise ValueError(f"Neuron '{faulty_neuron}' does not exist in graph.")
@@ -135,12 +149,48 @@ class ReplacementService:
         session_id = f"session_{self._session_counter:04d}"
         self._session_counter += 1
 
-        session = ReplacementSession(
-            session_id=session_id,
-            faulty_neuron=faulty_neuron,
-            replacement_neuron=replacement_neuron,
-            pending=migrations,
-        )
+        if mode == "ou":
+            from app.interventions.ou_process import DEFAULT_THETA, DEFAULT_SIGMA
+
+            ou_theta = theta if theta is not None else DEFAULT_THETA
+            ou_sigma = sigma if sigma is not None else DEFAULT_SIGMA
+            ou_mgr = OUReplacementManager(
+                theta=ou_theta,
+                sigma=ou_sigma,
+                rng_seed=seed,
+            )
+            ou_mgr.add_edges(migrations)
+
+            # Create new edges in graph at zero weight; keep old edges alive
+            # (OU manager handles the gradual crossover in the engine)
+            for m in migrations:
+                self.graph.add_edge(
+                    m.new_source,
+                    m.new_target,
+                    chemical_weight=0.0,
+                    gap_weight=0.0,
+                    weight=0.0,
+                )
+
+            session = ReplacementSession(
+                session_id=session_id,
+                faulty_neuron=faulty_neuron,
+                replacement_neuron=replacement_neuron,
+                pending=[],
+                completed=migrations,
+                mode="ou",
+                ou_manager=ou_mgr,
+                ou_params={"theta": ou_theta, "sigma": ou_sigma},
+            )
+        else:
+            session = ReplacementSession(
+                session_id=session_id,
+                faulty_neuron=faulty_neuron,
+                replacement_neuron=replacement_neuron,
+                pending=migrations,
+                mode="instant",
+            )
+
         self.sessions[session_id] = session
         return session
 
@@ -163,6 +213,38 @@ class ReplacementService:
             )
             session.status = "completed"
 
+        return session
+
+    def tick_ou(self, session_id: str) -> ReplacementSession:
+        """Advance OU process one step. Ghosts the old neuron when converged."""
+        session = self._get_session(session_id)
+        if session.mode != "ou":
+            raise ValueError("Session is not in OU mode.")
+        if session.status == "completed":
+            return session
+        if session.ou_manager is None or self.engine is None:
+            raise RuntimeError("OU manager or engine not available.")
+
+        all_done = session.ou_manager.tick(self.engine)
+        if all_done:
+            # Snap new edge weights to exact target in graph
+            for m in session.completed:
+                self.graph.add_edge(
+                    m.new_source,
+                    m.new_target,
+                    chemical_weight=m.chemical_weight,
+                    gap_weight=m.gap_weight,
+                    weight=m.chemical_weight + m.gap_weight,
+                )
+            # Remove old edges from graph
+            for m in session.completed:
+                if self.graph.has_edge(m.old_source, m.old_target):
+                    self.graph.remove_edge(m.old_source, m.old_target)
+            self._ghost_faulty_neuron(
+                faulty_neuron=session.faulty_neuron,
+                replacement_neuron=session.replacement_neuron,
+            )
+            session.status = "completed"
         return session
 
     def get_session(self, session_id: str) -> ReplacementSession:

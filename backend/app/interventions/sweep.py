@@ -168,6 +168,7 @@ class StepMetrics:
     firing_rate_mean: float
     synchrony: float
     pathway_fidelity_val: float
+    ou_convergence: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -201,6 +202,9 @@ def run_replacement_sweep(
     step_ms: float = 500.0,
     edges_per_step: int = 1,
     seed: int | None = None,
+    replacement_mode: str = "instant",
+    ou_theta: float | None = None,
+    ou_sigma: float | None = None,
 ) -> ReplacementTimeSeries:
     """Run neuron-by-neuron replacement with per-step metric snapshots.
 
@@ -209,6 +213,8 @@ def run_replacement_sweep(
        - start_replacement (allocates engine slot)
        - For each edge migration batch: mutate engine, run, measure
     3. Return time-series of metrics at every step.
+
+    Set *replacement_mode* to ``"ou"`` for gradual OU-based replacement.
     """
     rng = stdlib_random.Random(seed)
     engine = get_engine(engine_name)
@@ -238,14 +244,20 @@ def run_replacement_sweep(
             faulty_neuron=neuron_name,
             edge_order="random",
             seed=rng.randint(0, 10**9),
+            mode=replacement_mode,
+            theta=ou_theta,
+            sigma=ou_sigma,
         )
         total_edges = len(session.pending) + len(session.completed)
 
         while session.status != "completed":
-            session = service.step_replacement(
-                session.session_id,
-                edges_to_migrate=edges_per_step,
-            )
+            if session.mode == "ou":
+                session = service.tick_ou(session.session_id)
+            else:
+                session = service.step_replacement(
+                    session.session_id,
+                    edges_to_migrate=edges_per_step,
+                )
             engine.run(step_ms)
 
             trains = engine.get_spike_trains()
@@ -254,6 +266,12 @@ def run_replacement_sweep(
             rates = firing_rate_distribution(trains, step_ms)
             rate_vals = np.array(list(rates.values()))
             pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
+
+            ou_conv = (
+                session.ou_manager.convergence_fraction()
+                if session.ou_manager is not None
+                else None
+            )
 
             steps.append(StepMetrics(
                 step_index=global_step,
@@ -267,6 +285,7 @@ def run_replacement_sweep(
                 firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
                 synchrony=network_synchrony(trains, step_ms),
                 pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
+                ou_convergence=ou_conv,
             ))
             global_step += 1
 
@@ -289,6 +308,9 @@ def run_replacement_sweep_stream(
     step_ms: float = 500.0,
     edges_per_step: int = 1,
     seed: int | None = None,
+    replacement_mode: str = "instant",
+    ou_theta: float | None = None,
+    ou_sigma: float | None = None,
 ) -> Generator[dict, None, None]:
     """Streaming version of :func:`run_replacement_sweep`.
 
@@ -327,6 +349,7 @@ def run_replacement_sweep_stream(
         "neuron_model": neuron_model,
         "replacement_order": target_neurons,
         "total_steps": total_steps,
+        "replacement_mode": replacement_mode,
     }
 
     # Replacement loop
@@ -338,14 +361,20 @@ def run_replacement_sweep_stream(
             faulty_neuron=neuron_name,
             edge_order="random",
             seed=rng.randint(0, 10**9),
+            mode=replacement_mode,
+            theta=ou_theta,
+            sigma=ou_sigma,
         )
         total_edges = len(session.pending) + len(session.completed)
 
         while session.status != "completed":
-            session = service.step_replacement(
-                session.session_id,
-                edges_to_migrate=edges_per_step,
-            )
+            if session.mode == "ou":
+                session = service.tick_ou(session.session_id)
+            else:
+                session = service.step_replacement(
+                    session.session_id,
+                    edges_to_migrate=edges_per_step,
+                )
             engine.run(step_ms)
 
             trains = engine.get_spike_trains()
@@ -354,6 +383,12 @@ def run_replacement_sweep_stream(
             rates = firing_rate_distribution(trains, step_ms)
             rate_vals = np.array(list(rates.values()))
             pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
+
+            ou_conv = (
+                session.ou_manager.convergence_fraction()
+                if session.ou_manager is not None
+                else None
+            )
 
             step = StepMetrics(
                 step_index=global_step,
@@ -367,6 +402,7 @@ def run_replacement_sweep_stream(
                 firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
                 synchrony=network_synchrony(trains, step_ms),
                 pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
+                ou_convergence=ou_conv,
             )
             yield {"type": "step", "data": step.to_dict()}
             global_step += 1
@@ -381,6 +417,9 @@ def run_live_sweep_stream(
     baseline_ms: float = 1000.0,
     edges_per_step: int = 5,
     seed: int | None = None,
+    replacement_mode: str = "instant",
+    ou_theta: float | None = None,
+    ou_sigma: float | None = None,
 ) -> Generator[dict, None, None]:
     """Run a replacement sweep on the persistent simulation.
 
@@ -418,6 +457,7 @@ def run_live_sweep_stream(
         "neuron_model": "lif",
         "replacement_order": target_neurons,
         "total_steps": total_steps,
+        "replacement_mode": replacement_mode,
     }
 
     # Replacement loop on the live engine
@@ -434,14 +474,20 @@ def run_live_sweep_stream(
             faulty_neuron=neuron_name,
             edge_order="random",
             seed=rng.randint(0, 10**9),
+            mode=replacement_mode,
+            theta=ou_theta,
+            sigma=ou_sigma,
         )
         total_edges = len(session.pending) + len(session.completed)
 
         while session.status != "completed":
-            session = service.step_replacement(
-                session.session_id,
-                edges_to_migrate=edges_per_step,
-            )
+            if session.mode == "ou":
+                session = service.tick_ou(session.session_id)
+            else:
+                session = service.step_replacement(
+                    session.session_id,
+                    edges_to_migrate=edges_per_step,
+                )
             engine.run(step_ms)
 
             trains = engine.get_spike_trains()
@@ -450,6 +496,12 @@ def run_live_sweep_stream(
             rates = firing_rate_distribution(trains, step_ms)
             rate_vals = np.array(list(rates.values()))
             pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
+
+            ou_conv = (
+                session.ou_manager.convergence_fraction()
+                if session.ou_manager is not None
+                else None
+            )
 
             step = StepMetrics(
                 step_index=global_step,
@@ -463,6 +515,7 @@ def run_live_sweep_stream(
                 firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
                 synchrony=network_synchrony(trains, step_ms),
                 pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
+                ou_convergence=ou_conv,
             )
             yield {"type": "step", "data": step.to_dict()}
             global_step += 1

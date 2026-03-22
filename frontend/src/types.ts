@@ -61,6 +61,7 @@ export interface StepMetrics {
   firing_rate_mean: number
   synchrony: number
   pathway_fidelity_val: number
+  ou_convergence: number | null
 }
 
 export interface SweepBaseline {
@@ -124,6 +125,8 @@ export interface ReplacementEdgeMigration {
   gap_weight: number
 }
 
+export type ReplacementMode = 'instant' | 'ou'
+
 export interface ReplacementSession {
   session_id: string
   faulty_neuron: string
@@ -133,4 +136,7 @@ export interface ReplacementSession {
   completed_count: number
   next_edge: ReplacementEdgeMigration | null
   completed_edges: ReplacementEdgeMigration[]
+  mode: ReplacementMode
+  ou_params?: { theta: number; sigma: number }
+  ou_convergence?: number
 }

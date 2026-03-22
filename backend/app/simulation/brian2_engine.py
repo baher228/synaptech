@@ -44,6 +44,15 @@ prefs.codegen.target = "numpy"
 # Pool size: 302 real neurons + up to 48 replacement slots
 _POOL_SIZE = 350
 
+# Conductance contributed by each synapse count unit.
+# Shared across chemical, gap, build, and live-mutation paths.
+_CHEM_SCALE = 0.015 * nS
+_GAP_SCALE = 0.005 * nS
+
+# Command interneurons — tonically depolarised during locomotion in vivo.
+# AVA/AVD/AVE drive backward; AVB/PVC drive forward.
+_COMMAND_PREFIXES = ("AVA", "AVB", "AVD", "AVE", "PVC")
+
 # ------------------------------------------------------------------ #
 #  Neuron model equations — all currents in amps, divided by Cm
 # ------------------------------------------------------------------ #
@@ -139,6 +148,9 @@ class Brian2Engine:
     _neuron_names: list[str] = field(default_factory=list)
     _name_to_idx: dict[str, int] = field(default_factory=dict)
     _sensory_indices: list[int] = field(default_factory=list)
+    _inter_indices: list[int] = field(default_factory=list)
+    _motor_indices: list[int] = field(default_factory=list)
+    _command_indices: list[int] = field(default_factory=list)
     _n: int = 0
     _n_real: int = 0
     _next_free_slot: int = 0
@@ -176,6 +188,18 @@ class Brian2Engine:
         self._sensory_indices = [
             i for i, n in enumerate(self._neuron_names)
             if graph.nodes[n].get("type") == "S"
+        ]
+        self._inter_indices = [
+            i for i, n in enumerate(self._neuron_names)
+            if graph.nodes[n].get("type") == "I"
+        ]
+        self._motor_indices = [
+            i for i, n in enumerate(self._neuron_names)
+            if graph.nodes[n].get("type") == "M"
+        ]
+        self._command_indices = [
+            i for i, n in enumerate(self._neuron_names)
+            if n.startswith(_COMMAND_PREFIXES)
         ]
 
         self._build_neurons()
@@ -217,7 +241,7 @@ class Brian2Engine:
         for idx, t in zip(indices[mask], times[mask]):
             idx_int = int(idx)
             if idx_int < len(self._neuron_names):
-                trains[self._neuron_names[idx_int]].append(float(t))
+                trains[self._neuron_names[idx_int]].append(float(t - self._run_start_ms))
         return trains
 
     def get_firing_rates(self) -> dict[str, float]:
@@ -296,9 +320,9 @@ class Brian2Engine:
                 continue
             syn_idx = si * self._n + ti
             if src in GABAERGIC_NEURONS:
-                self._inh_syn.w_inh[syn_idx] = w * 0.005 * nS
+                self._inh_syn.w_inh[syn_idx] = w * _CHEM_SCALE
             else:
-                self._exc_syn.w_exc[syn_idx] = w * 0.005 * nS
+                self._exc_syn.w_exc[syn_idx] = w * _CHEM_SCALE
 
     def set_gap_weights(
         self,
@@ -312,7 +336,7 @@ class Brian2Engine:
             if si is None or ti is None:
                 continue
             syn_idx = si * self._n + ti
-            self._gap_syn.w_gap[syn_idx] = w * 0.005 * nS
+            self._gap_syn.w_gap[syn_idx] = w * _GAP_SCALE
 
     def reset(self) -> None:
         if self._built:
@@ -343,10 +367,16 @@ class Brian2Engine:
             ng.g_leak = 0.1 * nS
             ng.E_leak = -50 * mV
             ng.is_alive = 1
-            ng.noise_amp = 0.8 * pA
+            ng.noise_amp = 1.5 * pA
             ng.drive = 0 * pA
             for idx in self._sensory_indices:
                 ng.drive[idx] = 3.5 * pA
+            for idx in self._inter_indices:
+                ng.drive[idx] = 1.8 * pA
+            for idx in self._motor_indices:
+                ng.drive[idx] = 1.2 * pA
+            for idx in self._command_indices:
+                ng.drive[idx] = 2.5 * pA
             ng.namespace["V_thresh"] = -30 * mV
             ng.namespace["V_reset"] = -50 * mV
 
@@ -456,9 +486,9 @@ class Brian2Engine:
             ti = self._name_to_idx[tgt]
             syn_idx = self._syn_index(si, ti)
             if src in GABAERGIC_NEURONS:
-                self._inh_syn.w_inh[syn_idx] = cw * 0.005 * nS
+                self._inh_syn.w_inh[syn_idx] = cw * _CHEM_SCALE
             else:
-                self._exc_syn.w_exc[syn_idx] = cw * 0.005 * nS
+                self._exc_syn.w_exc[syn_idx] = cw * _CHEM_SCALE
 
     def _build_gap_junctions(self, graph: nx.DiGraph) -> None:
         self._gap_syn = Synapses(
@@ -477,4 +507,4 @@ class Brian2Engine:
             si = self._name_to_idx[src]
             ti = self._name_to_idx[tgt]
             syn_idx = self._syn_index(si, ti)
-            self._gap_syn.w_gap[syn_idx] = gw * 0.005 * nS
+            self._gap_syn.w_gap[syn_idx] = gw * _GAP_SCALE
