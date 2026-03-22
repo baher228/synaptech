@@ -390,6 +390,9 @@ class ReplacementSweepRequest(BaseModel):
         "synchrony_preserving",
         "function_preserving",
         "activity_balanced",
+        "betweenness_first",
+        "community_aware",
+        "weakest_synapses_first",
     ] = "random"
     burn_in_ms: float = 2000.0
     baseline_ms: float = 5000.0
@@ -399,6 +402,10 @@ class ReplacementSweepRequest(BaseModel):
     replacement_mode: Literal["instant", "ou"] = "instant"
     ou_theta: float | None = None
     ou_sigma: float | None = None
+    integration: str = "mirror"
+    integration_params: dict | None = None
+    batch_size: int = Field(1, ge=1, le=30)
+    settle_ms: float = Field(0.0, ge=0.0, le=10000.0)
 
 
 @app.post("/api/simulation/replacement-sweep")
@@ -435,6 +442,10 @@ def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
         replacement_mode=req.replacement_mode,
         ou_theta=req.ou_theta,
         ou_sigma=req.ou_sigma,
+        integration=req.integration,
+        integration_params=req.integration_params,
+        batch_size=req.batch_size,
+        settle_ms=req.settle_ms,
     )
     return result.to_dict()
 
@@ -450,6 +461,9 @@ def simulation_replacement_sweep_stream(
     replacement_mode: str = "instant",
     ou_theta: float | None = None,
     ou_sigma: float | None = None,
+    integration: str = "mirror",
+    batch_size: int = Query(1, ge=1, le=30),
+    settle_ms: float = Query(0.0, ge=0.0, le=10000.0),
 ):
     """SSE endpoint: runs replacement sweep on the persistent simulation.
 
@@ -485,6 +499,9 @@ def simulation_replacement_sweep_stream(
             replacement_mode=replacement_mode,
             ou_theta=ou_theta,
             ou_sigma=ou_sigma,
+            integration=integration,
+            batch_size=batch_size,
+            settle_ms=settle_ms,
         ):
             yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
 
@@ -595,3 +612,10 @@ def simulation_engines() -> dict:
 @app.get("/api/simulation/strategies")
 def simulation_strategies() -> dict:
     return {"strategies": FaultDetectionService.available_strategies()}
+
+
+@app.get("/api/simulation/integration-strategies")
+def simulation_integration_strategies() -> dict:
+    from app.interventions.integration_strategy import INTEGRATION_STRATEGIES
+
+    return {"strategies": list(INTEGRATION_STRATEGIES.keys())}
