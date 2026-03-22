@@ -173,7 +173,11 @@ export function createMetricsPanel(container: HTMLElement): {
           <select class="metrics-select" data-field="strategy" ${isRunning ? 'disabled' : ''}>
             <option value="random" ${strategy === 'random' ? 'selected' : ''}>Random</option>
             <option value="hub_first" ${strategy === 'hub_first' ? 'selected' : ''}>Hub-first</option>
-            <option value="periphery_first" ${strategy === 'periphery_first' ? 'selected' : ''}>Periphery-first</option>
+            <option value="peripheral_first" ${strategy === 'peripheral_first' || strategy === 'periphery_first' ? 'selected' : ''}>Peripheral-first</option>
+            <option value="redundancy_aware" ${strategy === 'redundancy_aware' ? 'selected' : ''}>Redundancy-aware</option>
+            <option value="synchrony_preserving" ${strategy === 'synchrony_preserving' ? 'selected' : ''}>Synchrony-preserving</option>
+            <option value="function_preserving" ${strategy === 'function_preserving' ? 'selected' : ''}>Function-preserving</option>
+            <option value="activity_balanced" ${strategy === 'activity_balanced' ? 'selected' : ''}>Activity-balanced</option>
           </select>
         </label>
         <label class="metrics-label">Fraction

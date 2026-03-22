@@ -49,7 +49,15 @@ export interface AppState {
 
 // ─── Replacement sweep metrics ───
 
-export type SweepStrategy = 'random' | 'hub_first' | 'periphery_first'
+export type SweepStrategy =
+  | 'random'
+  | 'hub_first'
+  | 'peripheral_first'
+  | 'periphery_first'
+  | 'redundancy_aware'
+  | 'synchrony_preserving'
+  | 'function_preserving'
+  | 'activity_balanced'
 
 export interface StepMetrics {
   step_index: number
