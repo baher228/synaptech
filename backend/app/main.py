@@ -68,6 +68,24 @@ def _persistent_simulation() -> PersistentSimulation:
     return PersistentSimulation(get_connectome_graph())
 
 
+_ACTIVITY_AWARE_STRATEGIES = {"activity_balanced"}
+
+
+def _estimate_activity_profile(
+    graph,
+    engine_name: str,
+    neuron_model: str,
+    burn_in_ms: float,
+    duration_ms: float,
+) -> dict[str, float]:
+    """Estimate per-neuron firing rates over a baseline window."""
+    engine = get_engine(engine_name)
+    engine.build(graph.copy(), neuron_model=neuron_model)
+    engine.run(max(0.0, burn_in_ms))
+    engine.run(max(10.0, duration_ms))
+    return engine.get_firing_rates()
+
+
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
@@ -363,7 +381,16 @@ class ReplacementSweepRequest(BaseModel):
     engine: str = "brian2"
     neuron_model: str = "hh"
     fraction: float = Field(0.1, ge=0.01, le=1.0)
-    strategy: Literal["random", "hub_first", "periphery_first"] = "random"
+    strategy: Literal[
+        "random",
+        "hub_first",
+        "periphery_first",
+        "peripheral_first",
+        "redundancy_aware",
+        "synchrony_preserving",
+        "function_preserving",
+        "activity_balanced",
+    ] = "random"
     burn_in_ms: float = 2000.0
     baseline_ms: float = 5000.0
     step_ms: float = 500.0
@@ -379,11 +406,21 @@ def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
     """Run one-by-one neuron replacement with per-step metric snapshots."""
     graph = get_connectome_graph()
     detector = FaultDetectionService()
+    activity_profile: dict[str, float] | None = None
+    if req.strategy in _ACTIVITY_AWARE_STRATEGIES:
+        activity_profile = _estimate_activity_profile(
+            graph=graph,
+            engine_name=req.engine,
+            neuron_model=req.neuron_model,
+            burn_in_ms=req.burn_in_ms,
+            duration_ms=req.baseline_ms,
+        )
     targets = detector.select_targets_by_fraction(
         graph=graph,
         fraction=req.fraction,
         seed=req.seed,
         strategy=req.strategy,
+        activity_by_neuron=activity_profile,
     )
     result = run_replacement_sweep(
         graph=graph,
@@ -423,11 +460,18 @@ def simulation_replacement_sweep_stream(
 
     sim = _persistent_simulation()
     detector = FaultDetectionService()
+    activity_profile: dict[str, float] | None = None
+    if strategy in _ACTIVITY_AWARE_STRATEGIES:
+        activity_profile = sim.engine.get_firing_rates()
+        if not any(rate > 0.0 for rate in activity_profile.values()):
+            sim.step(max(100.0, step_ms))
+            activity_profile = sim.engine.get_firing_rates()
     targets = detector.select_targets_by_fraction(
         graph=sim.graph,
         fraction=fraction,
         seed=seed,
         strategy=strategy,
+        activity_by_neuron=activity_profile,
     )
 
     def sse_generator():
@@ -550,5 +594,4 @@ def simulation_engines() -> dict:
 
 @app.get("/api/simulation/strategies")
 def simulation_strategies() -> dict:
-    # Backward-compatible endpoint name; now we expose the single selector.
-    return {"strategies": ["random_faulty"]}
+    return {"strategies": FaultDetectionService.available_strategies()}
