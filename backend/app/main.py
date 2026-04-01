@@ -22,7 +22,6 @@ from app.interventions.sweep import (
     Intervention,
     run_sweep,
     run_replacement_sweep,
-    run_replacement_sweep_stream,
     run_live_sweep_stream,
 )
 from app.metrics.behavior_assays import (
@@ -179,8 +178,9 @@ async def live_simulation(
 @app.post("/api/simulation/session/reset")
 async def simulation_session_reset(neuron_model: str = "lif") -> dict:
     """Reset the persistent simulation (rebuilds from scratch)."""
-    _persistent_simulation.cache_clear()
-    return {"status": "reset"}
+    sim = _persistent_simulation()
+    sim.reset(neuron_model=neuron_model)
+    return {"status": "reset", "neuron_model": neuron_model}
 
 
 # ------------------------------------------------------------------ #
@@ -519,6 +519,7 @@ def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
 def simulation_replacement_sweep_stream(
     fraction: float = Query(0.1, ge=0.01, le=1.0),
     strategy: str = "random",
+    neuron_model: str = "lif",
     step_ms: float = 500.0,
     baseline_ms: float = 1000.0,
     edges_per_step: int = Query(5, ge=1, le=50),
@@ -559,6 +560,9 @@ def simulation_replacement_sweep_stream(
 
     def sse_generator():
         try:
+            if getattr(sim, "neuron_model", None) != neuron_model:
+                sim.reset(neuron_model=neuron_model)
+
             for event in run_live_sweep_stream(
                 sim=sim,
                 target_neurons=targets,
