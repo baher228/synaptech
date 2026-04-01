@@ -41,12 +41,31 @@ class PersistentSimulation:
             self._graph.nodes[n].get("type") == "M" for n in self._node_names
         ])
 
-        # Build and burn in
-        self._engine = get_engine("brian2")
-        self._engine.build(self._graph, neuron_model=neuron_model)
-        self._engine.run(burn_in_ms)
-        self._step_count = 0
+        self._burn_in_ms = burn_in_ms
         self._lock = threading.Lock()
+        self._step_count = 0
+        self._build_engine()
+
+    def _build_engine(self) -> None:
+        self._engine = get_engine("brian2")
+        self._engine.build(self._graph, neuron_model=self._neuron_model)
+        self._engine.run(self._burn_in_ms)
+
+    def reset(
+        self,
+        graph: nx.DiGraph | None = None,
+        neuron_model: str | None = None,
+        burn_in_ms: float | None = None,
+    ) -> None:
+        with self._lock:
+            if graph is not None:
+                self._graph = graph
+            if neuron_model is not None:
+                self._neuron_model = neuron_model
+            if burn_in_ms is not None:
+                self._burn_in_ms = burn_in_ms
+            self._step_count = 0
+            self._build_engine()
 
     def step(self, duration_ms: float = 500.0) -> dict:
         """Advance the simulation and return current firing rates.
