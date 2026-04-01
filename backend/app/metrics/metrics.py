@@ -127,36 +127,44 @@ def kuramoto_order_parameter(
 ) -> float:
     """Kuramoto order parameter R for a motor neuron population.
 
-    Uses spike-phase extraction: assigns phase linearly 0 -> 2*pi between
-    consecutive spikes. R(t) = |mean(exp(i * phi_j(t)))| over the population.
+    Uses spike-phase interpolation in each neuron and computes
+    R(t) = |mean(exp(i * phi_j(t)))| over active neurons.
 
-    Returns mean R over the window, or 0.0 if fewer than 2 neurons have >= 2 spikes.
+    Neurons with a single spike in the window still contribute via
+    period-extrapolated phase, which avoids pathological all-zero
+    outputs in sparse windows.
+
+    Returns mean R over the window, or 0.0 if fewer than 2 neurons spike.
     """
-    n_steps = max(1, int(duration_ms / dt_ms))
+    n_steps = max(2, int(np.ceil(duration_ms / max(dt_ms, 1e-6))))
+    t_axis = np.arange(n_steps, dtype=float) * max(dt_ms, 1e-6)
 
-    phases = []
+    phases: list[np.ndarray] = []
     for name in motor_neuron_names:
-        times = sorted(spike_trains.get(name, []))
-        if len(times) < 2:
+        times = np.array(
+            sorted(t for t in spike_trains.get(name, []) if 0.0 <= t <= duration_ms),
+            dtype=float,
+        )
+        if times.size == 0:
             continue
-        phi = np.zeros(n_steps)
-        for k in range(len(times) - 1):
-            t0 = times[k]
-            t1 = times[k + 1]
-            i0 = max(0, int(t0 / dt_ms))
-            i1 = min(n_steps, int(t1 / dt_ms))
-            if i1 <= i0:
-                continue
-            phi[i0:i1] = np.linspace(0, 2 * np.pi, i1 - i0, endpoint=False)
-        # After last spike: no phase info
-        last_idx = min(n_steps, int(times[-1] / dt_ms))
-        phi[last_idx:] = 0.0
-        phases.append(phi)
+
+        if times.size == 1:
+            period = max(duration_ms, dt_ms)
+        else:
+            isis = np.diff(times)
+            period = float(np.median(isis))
+            if not np.isfinite(period) or period <= dt_ms:
+                period = max(duration_ms / max(int(times.size), 1), dt_ms)
+
+        knot_times = np.concatenate(([times[0] - period], times, [times[-1] + period]))
+        knot_phases = 2 * np.pi * np.arange(-1, times.size + 1, dtype=float)
+        phi_unwrapped = np.interp(t_axis, knot_times, knot_phases)
+        phases.append(np.mod(phi_unwrapped, 2 * np.pi))
 
     if len(phases) < 2:
         return 0.0
 
-    phase_matrix = np.array(phases)  # (n_active_motors, n_steps)
+    phase_matrix = np.array(phases)
     r_t = np.abs(np.mean(np.exp(1j * phase_matrix), axis=0))
     return float(np.mean(r_t))
 

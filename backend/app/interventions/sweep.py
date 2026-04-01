@@ -4,11 +4,12 @@ Runs a combinatorial grid of (fraction x trial), collecting
 failure scores and per-run metrics into a structured result set.
 
 Also provides :func:`run_replacement_sweep` for per-step metric capture
-during one-by-one neuron replacement.
+during neuron replacement (supports batch replacement).
 """
 
 from __future__ import annotations
 
+import math
 import random as stdlib_random
 from dataclasses import asdict, dataclass, field
 from typing import Generator, Literal
@@ -169,6 +170,8 @@ class StepMetrics:
     synchrony: float
     pathway_fidelity_val: float
     ou_convergence: float | None = None
+    neurons_in_batch: list[str] = field(default_factory=list)
+    batch_index: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -180,6 +183,7 @@ class ReplacementTimeSeries:
     neuron_model: str
     replacement_order: list[str]
     baseline: dict
+    integration: str = "mirror"
     steps: list[StepMetrics] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -188,9 +192,111 @@ class ReplacementTimeSeries:
             "neuron_model": self.neuron_model,
             "replacement_order": self.replacement_order,
             "baseline": self.baseline,
+            "integration": self.integration,
             "steps": [s.to_dict() for s in self.steps],
         }
 
+
+# ------------------------------------------------------------------ #
+#  Helpers for batch replacement
+# ------------------------------------------------------------------ #
+
+def _collect_step_metrics(
+    *,
+    engine: object,
+    bl_voltages: object,
+    b_class: list[str],
+    sensory: list[str],
+    motor: list[str],
+    step_ms: float,
+    global_step: int,
+    sessions: list,
+    batch: list[str],
+    batch_index: int,
+) -> StepMetrics:
+    """Measure all metrics after one tick of replacement progress."""
+    trains = engine.get_spike_trains()  # type: ignore[attr-defined]
+    voltages = engine.get_voltage_matrix(window_ms=step_ms)  # type: ignore[attr-defined]
+
+    rates = firing_rate_distribution(trains, step_ms)
+    rate_vals = np.array(list(rates.values()))
+    pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
+
+    edges_migrated = sum(len(s.completed) for s in sessions)
+    total_edges = sum(len(s.pending) + len(s.completed) for s in sessions)
+
+    ou_conv = None
+    ou_managers = [s.ou_manager for s in sessions if s.ou_manager is not None]
+    if ou_managers:
+        convs = [m.convergence_fraction() for m in ou_managers]
+        ou_conv = sum(convs) / len(convs)
+
+    return StepMetrics(
+        step_index=global_step,
+        neuron_being_replaced=", ".join(batch),
+        edges_migrated=edges_migrated,
+        total_edges=total_edges,
+        kuramoto_r=kuramoto_order_parameter(trains, b_class, step_ms),
+        pca_deviation=pca_d,
+        pca_sigma=pca_s,
+        voltage_entropy=voltage_state_entropy(voltages, step_ms),
+        firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
+        synchrony=network_synchrony(trains, step_ms),
+        pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
+        ou_convergence=ou_conv,
+        neurons_in_batch=list(batch),
+        batch_index=batch_index,
+    )
+
+
+def _tick_sessions(
+    service: ReplacementService,
+    sessions: list,
+    edges_per_step: int,
+) -> None:
+    """Advance all active sessions by one step."""
+    for session in sessions:
+        if session.status == "completed":
+            continue
+        if session.mode == "ou":
+            service.tick_ou(session.session_id)
+        else:
+            service.step_replacement(
+                session.session_id,
+                edges_to_migrate=edges_per_step,
+            )
+
+
+def _start_batch(
+    service: ReplacementService,
+    batch: list[str],
+    rng: stdlib_random.Random,
+    replacement_mode: str,
+    ou_theta: float | None,
+    ou_sigma: float | None,
+    integration: str,
+    integration_params: dict | None,
+) -> list:
+    """Start replacement sessions for all neurons in a batch."""
+    sessions = []
+    for neuron_name in batch:
+        session = service.start_replacement(
+            faulty_neuron=neuron_name,
+            edge_order="random",
+            seed=rng.randint(0, 10**9),
+            mode=replacement_mode,
+            theta=ou_theta,
+            sigma=ou_sigma,
+            integration=integration,
+            integration_params=integration_params,
+        )
+        sessions.append(session)
+    return sessions
+
+
+# ------------------------------------------------------------------ #
+#  Main sweep functions
+# ------------------------------------------------------------------ #
 
 def run_replacement_sweep(
     graph: nx.DiGraph,
@@ -205,16 +311,22 @@ def run_replacement_sweep(
     replacement_mode: str = "instant",
     ou_theta: float | None = None,
     ou_sigma: float | None = None,
+    integration: str = "mirror",
+    integration_params: dict | None = None,
+    batch_size: int = 1,
+    settle_ms: float = 0.0,
 ) -> ReplacementTimeSeries:
-    """Run neuron-by-neuron replacement with per-step metric snapshots.
+    """Run neuron replacement with per-step metric snapshots.
 
     1. Build engine, burn in, capture baseline (voltages + spikes).
-    2. For each neuron in *target_neurons*:
-       - start_replacement (allocates engine slot)
-       - For each edge migration batch: mutate engine, run, measure
+    2. For each batch of *batch_size* neurons in *target_neurons*:
+       - start_replacement for all neurons in the batch
+       - Drive all sessions to completion in lockstep
+       - Optionally settle the network for *settle_ms*
     3. Return time-series of metrics at every step.
 
     Set *replacement_mode* to ``"ou"`` for gradual OU-based replacement.
+    Set *integration* to vary how replacement neurons wire in.
     """
     rng = stdlib_random.Random(seed)
     engine = get_engine(engine_name)
@@ -234,66 +346,50 @@ def run_replacement_sweep(
         voltages=bl_voltages, b_class_names=b_class,
     )
 
-    # Replacement loop
+    # Replacement loop — process neurons in batches
     service = ReplacementService(graph=working_graph, engine=engine)
     steps: list[StepMetrics] = []
     global_step = 0
 
-    for neuron_name in target_neurons:
-        session = service.start_replacement(
-            faulty_neuron=neuron_name,
-            edge_order="random",
-            seed=rng.randint(0, 10**9),
-            mode=replacement_mode,
-            theta=ou_theta,
-            sigma=ou_sigma,
-        )
-        total_edges = len(session.pending) + len(session.completed)
+    batches = [
+        target_neurons[i : i + batch_size]
+        for i in range(0, len(target_neurons), batch_size)
+    ]
 
-        while session.status != "completed":
-            if session.mode == "ou":
-                session = service.tick_ou(session.session_id)
-            else:
-                session = service.step_replacement(
-                    session.session_id,
-                    edges_to_migrate=edges_per_step,
-                )
+    for batch_index, batch in enumerate(batches):
+        sessions = _start_batch(
+            service, batch, rng,
+            replacement_mode, ou_theta, ou_sigma,
+            integration, integration_params,
+        )
+
+        while any(s.status != "completed" for s in sessions):
+            _tick_sessions(service, sessions, edges_per_step)
             engine.run(step_ms)
 
-            trains = engine.get_spike_trains()
-            voltages = engine.get_voltage_matrix(window_ms=step_ms)
-
-            rates = firing_rate_distribution(trains, step_ms)
-            rate_vals = np.array(list(rates.values()))
-            pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
-
-            ou_conv = (
-                session.ou_manager.convergence_fraction()
-                if session.ou_manager is not None
-                else None
-            )
-
-            steps.append(StepMetrics(
-                step_index=global_step,
-                neuron_being_replaced=neuron_name,
-                edges_migrated=len(session.completed),
-                total_edges=total_edges,
-                kuramoto_r=kuramoto_order_parameter(trains, b_class, step_ms),
-                pca_deviation=pca_d,
-                pca_sigma=pca_s,
-                voltage_entropy=voltage_state_entropy(voltages, step_ms),
-                firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
-                synchrony=network_synchrony(trains, step_ms),
-                pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
-                ou_convergence=ou_conv,
+            steps.append(_collect_step_metrics(
+                engine=engine,
+                bl_voltages=bl_voltages,
+                b_class=b_class,
+                sensory=sensory,
+                motor=motor,
+                step_ms=step_ms,
+                global_step=global_step,
+                sessions=sessions,
+                batch=batch,
+                batch_index=batch_index,
             ))
             global_step += 1
+
+        if settle_ms > 0.0:
+            engine.run(settle_ms)
 
     return ReplacementTimeSeries(
         strategy="one_by_one_replacement",
         neuron_model=neuron_model,
         replacement_order=target_neurons,
         baseline=baseline.to_dict(),
+        integration=integration,
         steps=steps,
     )
 
@@ -311,6 +407,10 @@ def run_replacement_sweep_stream(
     replacement_mode: str = "instant",
     ou_theta: float | None = None,
     ou_sigma: float | None = None,
+    integration: str = "mirror",
+    integration_params: dict | None = None,
+    batch_size: int = 1,
+    settle_ms: float = 0.0,
 ) -> Generator[dict, None, None]:
     """Streaming version of :func:`run_replacement_sweep`.
 
@@ -326,7 +426,6 @@ def run_replacement_sweep_stream(
     b_class = list(B_CLASS_MOTOR_NEURONS)
 
     # Estimate total steps for progress reporting
-    import math
     total_steps = sum(
         math.ceil((graph.in_degree(n) + graph.out_degree(n)) / edges_per_step)
         for n in target_neurons
@@ -350,62 +449,47 @@ def run_replacement_sweep_stream(
         "replacement_order": target_neurons,
         "total_steps": total_steps,
         "replacement_mode": replacement_mode,
+        "integration": integration,
+        "batch_size": batch_size,
     }
 
     # Replacement loop
     service = ReplacementService(graph=working_graph, engine=engine)
     global_step = 0
 
-    for neuron_name in target_neurons:
-        session = service.start_replacement(
-            faulty_neuron=neuron_name,
-            edge_order="random",
-            seed=rng.randint(0, 10**9),
-            mode=replacement_mode,
-            theta=ou_theta,
-            sigma=ou_sigma,
-        )
-        total_edges = len(session.pending) + len(session.completed)
+    batches = [
+        target_neurons[i : i + batch_size]
+        for i in range(0, len(target_neurons), batch_size)
+    ]
 
-        while session.status != "completed":
-            if session.mode == "ou":
-                session = service.tick_ou(session.session_id)
-            else:
-                session = service.step_replacement(
-                    session.session_id,
-                    edges_to_migrate=edges_per_step,
-                )
+    for batch_index, batch in enumerate(batches):
+        sessions = _start_batch(
+            service, batch, rng,
+            replacement_mode, ou_theta, ou_sigma,
+            integration, integration_params,
+        )
+
+        while any(s.status != "completed" for s in sessions):
+            _tick_sessions(service, sessions, edges_per_step)
             engine.run(step_ms)
 
-            trains = engine.get_spike_trains()
-            voltages = engine.get_voltage_matrix(window_ms=step_ms)
-
-            rates = firing_rate_distribution(trains, step_ms)
-            rate_vals = np.array(list(rates.values()))
-            pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
-
-            ou_conv = (
-                session.ou_manager.convergence_fraction()
-                if session.ou_manager is not None
-                else None
-            )
-
-            step = StepMetrics(
-                step_index=global_step,
-                neuron_being_replaced=neuron_name,
-                edges_migrated=len(session.completed),
-                total_edges=total_edges,
-                kuramoto_r=kuramoto_order_parameter(trains, b_class, step_ms),
-                pca_deviation=pca_d,
-                pca_sigma=pca_s,
-                voltage_entropy=voltage_state_entropy(voltages, step_ms),
-                firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
-                synchrony=network_synchrony(trains, step_ms),
-                pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
-                ou_convergence=ou_conv,
+            step = _collect_step_metrics(
+                engine=engine,
+                bl_voltages=bl_voltages,
+                b_class=b_class,
+                sensory=sensory,
+                motor=motor,
+                step_ms=step_ms,
+                global_step=global_step,
+                sessions=sessions,
+                batch=batch,
+                batch_index=batch_index,
             )
             yield {"type": "step", "data": step.to_dict()}
             global_step += 1
+
+        if settle_ms > 0.0:
+            engine.run(settle_ms)
 
     yield {"type": "done"}
 
@@ -413,19 +497,23 @@ def run_replacement_sweep_stream(
 def run_live_sweep_stream(
     sim: object,
     target_neurons: list[str],
-    step_ms: float = 200.0,
+    step_ms: float = 500.0,
     baseline_ms: float = 1000.0,
     edges_per_step: int = 5,
     seed: int | None = None,
     replacement_mode: str = "instant",
     ou_theta: float | None = None,
     ou_sigma: float | None = None,
+    integration: str = "mirror",
+    integration_params: dict | None = None,
+    batch_size: int = 1,
+    settle_ms: float = 0.0,
 ) -> Generator[dict, None, None]:
     """Run a replacement sweep on the persistent simulation.
 
     Uses the already-running engine — no build or burn-in needed.
     Captures a quick baseline from the current state, then replaces
-    neurons one-by-one on the live engine.
+    neurons in batches on the live engine.
     """
     rng = stdlib_random.Random(seed)
     engine = sim.engine  # type: ignore[attr-defined]
@@ -471,7 +559,6 @@ def run_live_sweep_stream(
     sensory, motor = _neuron_groups(graph)
     b_class = list(B_CLASS_MOTOR_NEURONS)
 
-    import math
     total_steps = sum(
         math.ceil((graph.in_degree(n) + graph.out_degree(n)) / edges_per_step)
         for n in valid_targets
@@ -514,74 +601,83 @@ def run_live_sweep_stream(
         "replacement_order": valid_targets,
         "total_steps": total_steps,
         "replacement_mode": replacement_mode,
+        "integration": integration,
+        "batch_size": batch_size,
     }
 
     # Replacement loop on the live engine
     service = ReplacementService(graph=graph, engine=engine)
     global_step = 0
 
-    for neuron_name in valid_targets:
+    batches = [
+        valid_targets[i : i + batch_size]
+        for i in range(0, len(valid_targets), batch_size)
+    ]
+
+    for batch_index, batch in enumerate(batches):
         try:
             if sim_lock is not None:
                 with sim_lock:
-                    session = service.start_replacement(
-                        faulty_neuron=neuron_name,
-                        edge_order="random",
-                        seed=rng.randint(0, 10**9),
-                        mode=replacement_mode,
-                        theta=ou_theta,
-                        sigma=ou_sigma,
+                    sessions = _start_batch(
+                        service, batch, rng,
+                        replacement_mode, ou_theta, ou_sigma,
+                        integration, integration_params,
                     )
             else:
-                session = service.start_replacement(
-                    faulty_neuron=neuron_name,
-                    edge_order="random",
-                    seed=rng.randint(0, 10**9),
-                    mode=replacement_mode,
-                    theta=ou_theta,
-                    sigma=ou_sigma,
+                sessions = _start_batch(
+                    service, batch, rng,
+                    replacement_mode, ou_theta, ou_sigma,
+                    integration, integration_params,
                 )
         except RuntimeError as exc:
             yield {
                 "type": "error",
                 "error": "replacement_start_failed",
-                "neuron": neuron_name,
+                "batch": batch,
                 "message": str(exc),
             }
-            break
-        total_edges = len(session.pending) + len(session.completed)
+            yield {"type": "done"}
+            return
 
-        while session.status != "completed":
+        while any(s.status != "completed" for s in sessions):
             try:
                 if sim_lock is not None:
                     with sim_lock:
-                        if session.mode == "ou":
-                            session = service.tick_ou(session.session_id)
-                        else:
-                            session = service.step_replacement(
-                                session.session_id,
-                                edges_to_migrate=edges_per_step,
-                            )
+                        _tick_sessions(service, sessions, edges_per_step)
                         engine.run(step_ms)
-                        trains = engine.get_spike_trains()
-                        voltages = engine.get_voltage_matrix(window_ms=step_ms)
-                else:
-                    if session.mode == "ou":
-                        session = service.tick_ou(session.session_id)
-                    else:
-                        session = service.step_replacement(
-                            session.session_id,
-                            edges_to_migrate=edges_per_step,
+                        step = _collect_step_metrics(
+                            engine=engine,
+                            bl_voltages=bl_voltages,
+                            b_class=b_class,
+                            sensory=sensory,
+                            motor=motor,
+                            step_ms=step_ms,
+                            global_step=global_step,
+                            sessions=sessions,
+                            batch=batch,
+                            batch_index=batch_index,
                         )
+                else:
+                    _tick_sessions(service, sessions, edges_per_step)
                     engine.run(step_ms)
-                    trains = engine.get_spike_trains()
-                    voltages = engine.get_voltage_matrix(window_ms=step_ms)
+                    step = _collect_step_metrics(
+                        engine=engine,
+                        bl_voltages=bl_voltages,
+                        b_class=b_class,
+                        sensory=sensory,
+                        motor=motor,
+                        step_ms=step_ms,
+                        global_step=global_step,
+                        sessions=sessions,
+                        batch=batch,
+                        batch_index=batch_index,
+                    )
             except Exception as exc:
                 if _is_clock_exhaustion(exc):
                     yield {
                         "type": "error",
                         "error": "clock_exhausted",
-                        "neuron": neuron_name,
+                        "batch": batch,
                         "message": (
                             "Persistent simulation clock exhausted during live sweep. "
                             "Reset via POST /api/simulation/session/reset and retry."
@@ -591,31 +687,29 @@ def run_live_sweep_stream(
                     return
                 raise
 
-            rates = firing_rate_distribution(trains, step_ms)
-            rate_vals = np.array(list(rates.values()))
-            pca_d, pca_s = pca_attractor_deviation(bl_voltages, voltages)
-
-            ou_conv = (
-                session.ou_manager.convergence_fraction()
-                if session.ou_manager is not None
-                else None
-            )
-
-            step = StepMetrics(
-                step_index=global_step,
-                neuron_being_replaced=neuron_name,
-                edges_migrated=len(session.completed),
-                total_edges=total_edges,
-                kuramoto_r=kuramoto_order_parameter(trains, b_class, step_ms),
-                pca_deviation=pca_d,
-                pca_sigma=pca_s,
-                voltage_entropy=voltage_state_entropy(voltages, step_ms),
-                firing_rate_mean=float(np.mean(rate_vals)) if len(rate_vals) else 0.0,
-                synchrony=network_synchrony(trains, step_ms),
-                pathway_fidelity_val=pathway_fidelity(trains, sensory, motor, step_ms),
-                ou_convergence=ou_conv,
-            )
             yield {"type": "step", "data": step.to_dict()}
             global_step += 1
+
+        if settle_ms > 0.0:
+            try:
+                if sim_lock is not None:
+                    with sim_lock:
+                        engine.run(settle_ms)
+                else:
+                    engine.run(settle_ms)
+            except Exception as exc:
+                if _is_clock_exhaustion(exc):
+                    yield {
+                        "type": "error",
+                        "error": "clock_exhausted",
+                        "batch": batch,
+                        "message": (
+                            "Persistent simulation clock exhausted during settle period. "
+                            "Reset via POST /api/simulation/session/reset and retry."
+                        ),
+                    }
+                    yield {"type": "done"}
+                    return
+                raise
 
     yield {"type": "done"}

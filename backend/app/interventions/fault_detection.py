@@ -32,6 +32,9 @@ class FaultDetectionService:
         "synchrony_preserving",
         "function_preserving",
         "activity_balanced",
+        "betweenness_first",
+        "community_aware",
+        "weakest_synapses_first",
     )
 
     @staticmethod
@@ -265,6 +268,65 @@ class FaultDetectionService:
                     order.append(bucket.pop(0)[2])
         return order
 
+    def _betweenness_scores(
+        self,
+        graph: nx.DiGraph,
+        candidates: list[str],
+    ) -> dict[str, float]:
+        bc = nx.betweenness_centrality(graph)
+        return {n: float(bc.get(n, 0.0)) for n in candidates}
+
+    def _community_aware_order(
+        self,
+        graph: nx.DiGraph,
+        candidates: list[str],
+    ) -> list[str]:
+        """Replace within detected communities before crossing boundaries.
+
+        Uses Louvain on the undirected projection.  Exhausts each community
+        (smallest first) before moving to the next; within each community,
+        neurons are sorted by degree centrality (low first).
+        """
+        undirected = graph.to_undirected()
+        communities = nx.community.louvain_communities(undirected, seed=42)
+
+        node_to_comm: dict[str, int] = {}
+        for i, comm in enumerate(communities):
+            for node in comm:
+                node_to_comm[node] = i
+
+        comm_groups: dict[int, list[str]] = {}
+        for c in candidates:
+            ci = node_to_comm.get(c, -1)
+            comm_groups.setdefault(ci, []).append(c)
+
+        degree_centrality = nx.degree_centrality(graph)
+        for ci in comm_groups:
+            comm_groups[ci].sort(key=lambda n: degree_centrality.get(n, 0.0))
+
+        order: list[str] = []
+        for ci in sorted(comm_groups, key=lambda ci: len(comm_groups[ci])):
+            order.extend(comm_groups[ci])
+        return order
+
+    def _total_synaptic_weight(
+        self,
+        graph: nx.DiGraph,
+        candidates: list[str],
+    ) -> dict[str, float]:
+        scores: dict[str, float] = {}
+        for n in candidates:
+            in_w = sum(
+                float(d.get("weight", 0.0))
+                for _, _, d in graph.in_edges(n, data=True)
+            )
+            out_w = sum(
+                float(d.get("weight", 0.0))
+                for _, _, d in graph.out_edges(n, data=True)
+            )
+            scores[n] = in_w + out_w
+        return scores
+
     def _ordered_candidates(
         self,
         graph: nx.DiGraph,
@@ -328,6 +390,30 @@ class FaultDetectionService:
                 candidates=candidates,
                 activity_by_neuron=activity_by_neuron,
                 seed=seed,
+            )
+
+        if strategy == "betweenness_first":
+            scores = self._betweenness_scores(graph, candidates)
+            return sorted(
+                candidates,
+                key=lambda n: (
+                    scores[n],
+                    self._stable_noise(n, seed),
+                ),
+                reverse=True,
+            )
+
+        if strategy == "community_aware":
+            return self._community_aware_order(graph, candidates)
+
+        if strategy == "weakest_synapses_first":
+            weights = self._total_synaptic_weight(graph, candidates)
+            return sorted(
+                candidates,
+                key=lambda n: (
+                    weights[n],
+                    self._stable_noise(n, seed),
+                ),
             )
 
         # Guard for mypy; all strategies handled by now.

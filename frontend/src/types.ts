@@ -58,6 +58,15 @@ export type SweepStrategy =
   | 'synchrony_preserving'
   | 'function_preserving'
   | 'activity_balanced'
+  | 'betweenness_first'
+  | 'community_aware'
+  | 'weakest_synapses_first'
+
+export type IntegrationStrategy =
+  | 'mirror'
+  | 'partial_inherit'
+  | 'local_only'
+  | 'rewire'
 
 export interface StepMetrics {
   step_index: number

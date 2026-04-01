@@ -165,6 +165,9 @@ export interface SweepStreamParams {
   replacementMode?: ReplacementMode
   ouTheta?: number
   ouSigma?: number
+  integration?: string
+  batchSize?: number
+  settleMs?: number
 }
 
 export interface SweepStreamCallbacks {
@@ -188,6 +191,9 @@ export function connectSweepStream(
   if (params.replacementMode) search.set('replacement_mode', params.replacementMode)
   if (params.ouTheta !== undefined) search.set('ou_theta', String(params.ouTheta))
   if (params.ouSigma !== undefined) search.set('ou_sigma', String(params.ouSigma))
+  if (params.integration) search.set('integration', params.integration)
+  if (params.batchSize !== undefined) search.set('batch_size', String(params.batchSize))
+  if (params.settleMs !== undefined) search.set('settle_ms', String(params.settleMs))
 
   const url = `/api/simulation/replacement-sweep/stream?${search.toString()}`
   const source = new EventSource(url)

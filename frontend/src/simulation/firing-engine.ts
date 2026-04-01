@@ -35,7 +35,14 @@ export function createFiringEngine(
   options: FiringEngineOptions = {},
 ): FiringEngine {
   if (options.spikeData && Object.keys(options.spikeData.spike_trains).length > 0) {
-    return createReplayEngine(ctx, options.spikeData)
+    // Use replay for graph visualization, but also poll live data
+    // so the metrics panel Live tab receives firing rate updates.
+    const replay = createReplayEngine(ctx, options.spikeData)
+    const poller = createLivePollingEngine(ctx, options)
+    return {
+      start() { replay.start(); poller.start() },
+      stop() { replay.stop(); poller.stop() },
+    }
   }
   return createLivePollingEngine(ctx, options)
 }

@@ -103,6 +103,8 @@ class ReplacementService:
         mode: Literal["instant", "ou"] = "instant",
         theta: float | None = None,
         sigma: float | None = None,
+        integration: str = "mirror",
+        integration_params: dict | None = None,
     ) -> ReplacementSession:
         if faulty_neuron not in self.graph:
             raise ValueError(f"Neuron '{faulty_neuron}' does not exist in graph.")
@@ -138,6 +140,21 @@ class ReplacementService:
         migrations = self._build_edge_migrations(
             faulty_neuron=faulty_neuron,
             replacement_neuron=replacement_neuron,
+        )
+
+        # Apply integration strategy (transforms edge topology/weights)
+        from app.interventions.integration_strategy import get_integration_strategy
+
+        int_strategy = get_integration_strategy(
+            integration, **(integration_params or {})
+        )
+        int_rng = stdlib_random.Random(seed)
+        migrations = int_strategy.transform(
+            graph=self.graph,
+            faulty=faulty_neuron,
+            replacement=replacement_neuron,
+            migrations=migrations,
+            rng=int_rng,
         )
 
         if edge_order == "random":

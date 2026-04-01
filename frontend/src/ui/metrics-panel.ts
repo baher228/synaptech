@@ -4,6 +4,7 @@ import { createSweepChart, type SweepChart } from './sweep-chart'
 import type {
   BehaviorPerformanceResponse,
   GraphSource,
+  IntegrationStrategy,
   LiveSimulationResponse,
   SweepBaselineEvent,
   SweepStepEvent,
@@ -26,7 +27,10 @@ export function createMetricsPanel(container: HTMLElement): {
   // ─── Sweep local state ───
   let sweepMode: SweepMode = 'idle'
   let strategy: SweepStrategy = 'hub_first'
+  let integrationStrategy: IntegrationStrategy = 'mirror'
   let fraction = 0.05
+  let batchSize = 1
+  let settleMs = 0
   let activeStream: { close: () => void } | null = null
   let totalSteps = 0
   let currentStep = 0
@@ -169,7 +173,7 @@ export function createMetricsPanel(container: HTMLElement): {
 
     sweepControlsDiv.innerHTML = `
       <div class="metrics-row">
-        <label class="metrics-label">Strategy
+        <label class="metrics-label">Selection
           <select class="metrics-select" data-field="strategy" ${isRunning ? 'disabled' : ''}>
             <option value="random" ${strategy === 'random' ? 'selected' : ''}>Random</option>
             <option value="hub_first" ${strategy === 'hub_first' ? 'selected' : ''}>Hub-first</option>
@@ -178,12 +182,35 @@ export function createMetricsPanel(container: HTMLElement): {
             <option value="synchrony_preserving" ${strategy === 'synchrony_preserving' ? 'selected' : ''}>Synchrony-preserving</option>
             <option value="function_preserving" ${strategy === 'function_preserving' ? 'selected' : ''}>Function-preserving</option>
             <option value="activity_balanced" ${strategy === 'activity_balanced' ? 'selected' : ''}>Activity-balanced</option>
+            <option value="betweenness_first" ${strategy === 'betweenness_first' ? 'selected' : ''}>Betweenness-first</option>
+            <option value="community_aware" ${strategy === 'community_aware' ? 'selected' : ''}>Community-aware</option>
+            <option value="weakest_synapses_first" ${strategy === 'weakest_synapses_first' ? 'selected' : ''}>Weakest-synapses</option>
           </select>
         </label>
+        <label class="metrics-label">Integration
+          <select class="metrics-select" data-field="integration" ${isRunning ? 'disabled' : ''}>
+            <option value="mirror" ${integrationStrategy === 'mirror' ? 'selected' : ''}>Mirror (exact)</option>
+            <option value="partial_inherit" ${integrationStrategy === 'partial_inherit' ? 'selected' : ''}>Partial inherit</option>
+            <option value="local_only" ${integrationStrategy === 'local_only' ? 'selected' : ''}>Local only</option>
+            <option value="rewire" ${integrationStrategy === 'rewire' ? 'selected' : ''}>Rewire</option>
+          </select>
+        </label>
+      </div>
+      <div class="metrics-row">
         <label class="metrics-label">Fraction
           <span class="metrics-fraction-val">${(fraction * 100).toFixed(0)}%</span>
           <input type="range" class="metrics-range" data-field="fraction"
             min="0.01" max="0.30" step="0.01" value="${fraction}"
+            ${isRunning ? 'disabled' : ''} />
+        </label>
+        <label class="metrics-label">Batch size
+          <input type="number" class="metrics-input" data-field="batch-size"
+            min="1" max="30" value="${batchSize}"
+            ${isRunning ? 'disabled' : ''} />
+        </label>
+        <label class="metrics-label">Settle (ms)
+          <input type="number" class="metrics-input" data-field="settle-ms"
+            min="0" max="5000" step="50" value="${settleMs}"
             ${isRunning ? 'disabled' : ''} />
         </label>
       </div>
@@ -269,7 +296,15 @@ export function createMetricsPanel(container: HTMLElement): {
     renderSweepControls()
 
     activeStream = connectSweepStream(
-      { fraction, strategy, edgesPerStep: 5 },
+      {
+        fraction,
+        strategy,
+        stepMs: 500,
+        edgesPerStep: 5,
+        integration: integrationStrategy,
+        batchSize,
+        settleMs,
+      },
       {
         onBaseline(event: SweepBaselineEvent) {
           state.sweepStatus = 'receiving'
@@ -350,9 +385,18 @@ export function createMetricsPanel(container: HTMLElement): {
     if (target.dataset.field === 'strategy') {
       strategy = target.value as SweepStrategy
     }
+    if (target.dataset.field === 'integration') {
+      integrationStrategy = target.value as IntegrationStrategy
+    }
     if (target.dataset.field === 'fraction') {
       fraction = parseFloat(target.value)
       renderSweepControls()
+    }
+    if (target.dataset.field === 'batch-size') {
+      batchSize = Math.max(1, parseInt(target.value, 10) || 1)
+    }
+    if (target.dataset.field === 'settle-ms') {
+      settleMs = Math.max(0, parseFloat(target.value) || 0)
     }
   })
 
