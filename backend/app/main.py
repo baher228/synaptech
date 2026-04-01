@@ -4,11 +4,13 @@ from functools import lru_cache
 import random as stdlib_random
 from typing import Literal
 
+import networkx as nx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.connectome import (
+    CANONICAL_NODE_COUNT,
     graph_to_data,
     get_connectome_graph,
     get_connectome_graph_data,
@@ -69,6 +71,7 @@ def _persistent_simulation() -> PersistentSimulation:
 
 
 _ACTIVITY_AWARE_STRATEGIES = {"activity_balanced"}
+_LESION_AWARE_STRATEGIES = {"function_preserving"}
 
 
 def _estimate_activity_profile(
@@ -84,6 +87,46 @@ def _estimate_activity_profile(
     engine.run(max(0.0, burn_in_ms))
     engine.run(max(10.0, duration_ms))
     return engine.get_firing_rates()
+
+
+def _estimate_locomotion_impact_profile(graph) -> dict[str, float]:
+    """Estimate locomotion sensitivity using a structural proxy.
+
+    This lightweight proxy emphasizes command interneurons and B/D motor-chain
+    neurons, plus topological coupling to that locomotion backbone.
+    """
+    command_prefixes = ("AVA", "AVB", "AVD", "AVE", "PVC")
+    motor_prefixes = ("DB", "VB", "DD", "VD")
+    core = {
+        n
+        for n in graph.nodes
+        if n.startswith(command_prefixes) or n.startswith(motor_prefixes)
+    }
+    if not core:
+        return {}
+
+    degree_centrality = nx.degree_centrality(graph)
+    impact: dict[str, float] = {}
+    for node in graph.nodes:
+        in_neighbors = set(graph.predecessors(node))
+        out_neighbors = set(graph.successors(node))
+        neighbors = in_neighbors | out_neighbors
+        if neighbors:
+            core_overlap = len(neighbors & core) / len(neighbors)
+        else:
+            core_overlap = 0.0
+
+        is_command = 1.0 if node.startswith(command_prefixes) else 0.0
+        is_motor = 1.0 if node.startswith(motor_prefixes) else 0.0
+        is_core = 1.0 if node in core else 0.0
+        impact[node] = (
+            1.7 * is_command
+            + 1.2 * is_motor
+            + 0.8 * is_core
+            + 0.9 * core_overlap
+            + 0.5 * float(degree_centrality.get(node, 0.0))
+        )
+    return impact
 
 
 @app.get("/api/health")
@@ -111,8 +154,26 @@ async def live_simulation(
     step_ms: float = Query(default=500.0, ge=50.0, le=5000.0),
 ) -> dict:
     """Advance the persistent simulation and return current firing rates."""
+    recovered_session = False
     sim = _persistent_simulation()
-    return sim.step(step_ms)
+    try:
+        payload = sim.step(step_ms)
+    except Exception:
+        _persistent_simulation.cache_clear()
+        sim = _persistent_simulation()
+        payload = sim.step(step_ms)
+        recovered_session = True
+
+    active_fraction = float(payload.get("firing_summary_hz", {}).get("active_fraction", 0.0))
+    if active_fraction <= 0.0:
+        _persistent_simulation.cache_clear()
+        sim = _persistent_simulation()
+        payload = sim.step(step_ms)
+        recovered_session = True
+
+    payload["session_recovered"] = recovered_session
+    payload["is_canonical_size"] = payload.get("node_count") == CANONICAL_NODE_COUNT
+    return payload
 
 
 @app.post("/api/simulation/session/reset")
@@ -379,7 +440,7 @@ def simulation_sweep(req: SweepRequest) -> dict:
 
 class ReplacementSweepRequest(BaseModel):
     engine: str = "brian2"
-    neuron_model: str = "hh"
+    neuron_model: str = "lif"
     fraction: float = Field(0.1, ge=0.01, le=1.0)
     strategy: Literal[
         "random",
@@ -414,6 +475,7 @@ def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
     graph = get_connectome_graph()
     detector = FaultDetectionService()
     activity_profile: dict[str, float] | None = None
+    lesion_impact_profile: dict[str, float] | None = None
     if req.strategy in _ACTIVITY_AWARE_STRATEGIES:
         activity_profile = _estimate_activity_profile(
             graph=graph,
@@ -422,12 +484,15 @@ def simulation_replacement_sweep(req: ReplacementSweepRequest) -> dict:
             burn_in_ms=req.burn_in_ms,
             duration_ms=req.baseline_ms,
         )
+    if req.strategy in _LESION_AWARE_STRATEGIES:
+        lesion_impact_profile = _estimate_locomotion_impact_profile(graph)
     targets = detector.select_targets_by_fraction(
         graph=graph,
         fraction=req.fraction,
         seed=req.seed,
         strategy=req.strategy,
         activity_by_neuron=activity_profile,
+        lesion_impact_by_neuron=lesion_impact_profile,
     )
     result = run_replacement_sweep(
         graph=graph,
@@ -475,17 +540,21 @@ def simulation_replacement_sweep_stream(
     sim = _persistent_simulation()
     detector = FaultDetectionService()
     activity_profile: dict[str, float] | None = None
+    lesion_impact_profile: dict[str, float] | None = None
     if strategy in _ACTIVITY_AWARE_STRATEGIES:
         activity_profile = sim.engine.get_firing_rates()
         if not any(rate > 0.0 for rate in activity_profile.values()):
             sim.step(max(100.0, step_ms))
             activity_profile = sim.engine.get_firing_rates()
+    if strategy in _LESION_AWARE_STRATEGIES:
+        lesion_impact_profile = _estimate_locomotion_impact_profile(sim.graph)
     targets = detector.select_targets_by_fraction(
         graph=sim.graph,
         fraction=fraction,
         seed=seed,
         strategy=strategy,
         activity_by_neuron=activity_profile,
+        lesion_impact_by_neuron=lesion_impact_profile,
     )
 
     def sse_generator():
@@ -551,7 +620,7 @@ def simulation_behavior_specs() -> dict[str, object]:
 
 
 @app.post("/api/simulation/behavior/performance")
-def simulation_behavior_performance(req: BehaviorPerformanceRequest) -> dict[str, object]:
+async def simulation_behavior_performance(req: BehaviorPerformanceRequest) -> dict[str, object]:
     if req.behavior != "forward_locomotion":
         raise HTTPException(
             status_code=400,
@@ -608,11 +677,32 @@ async def simulation_spikes(
     duration_ms: float = 5000.0,
 ) -> dict:
     """Run the persistent simulation forward and return spike trains."""
+    recovered_session = False
+
+    def _capture(sim: PersistentSimulation) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+        sim.step(duration_ms)
+        trains_local = sim.engine.get_spike_trains()
+        sparse_local = {n: times for n, times in trains_local.items() if times}
+        return trains_local, sparse_local
+
     sim = _persistent_simulation()
-    sim.step(duration_ms)
-    trains = sim.engine.get_spike_trains()
-    # Strip neurons with no spikes to reduce payload
-    sparse = {n: times for n, times in trains.items() if times}
+    try:
+        trains, sparse = _capture(sim)
+    except Exception:
+        # If the persistent session is exhausted/corrupted, rebuild once and retry.
+        _persistent_simulation.cache_clear()
+        sim = _persistent_simulation()
+        trains, sparse = _capture(sim)
+        recovered_session = True
+
+    # Defensive recovery: if simulation has drifted into an all-silent state,
+    # rebuild to canonical baseline and retry once.
+    if not sparse:
+        _persistent_simulation.cache_clear()
+        sim = _persistent_simulation()
+        trains, sparse = _capture(sim)
+        recovered_session = True
+
     return {
         "duration_ms": duration_ms,
         "spike_trains": sparse,
@@ -620,6 +710,8 @@ async def simulation_spikes(
         "active_count": len(sparse),
         "engine": sim.engine.name,
         "neuron_model": sim.neuron_model,
+        "session_recovered": recovered_session,
+        "is_canonical_size": len(trains) == CANONICAL_NODE_COUNT,
     }
 
 

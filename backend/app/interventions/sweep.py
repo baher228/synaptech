@@ -57,6 +57,33 @@ def _neuron_groups(graph: nx.DiGraph) -> tuple[list[str], list[str]]:
     return sensory, motor
 
 
+def _canonical_neuron_name(name: str) -> str:
+    """Map replacement neuron names back to canonical neuron ids."""
+    if "__rep_" in name:
+        return name.split("__rep_", 1)[0]
+    return name
+
+
+def _active_b_class_population(
+    graph: nx.DiGraph,
+    spike_trains: dict[str, list[float]] | None = None,
+) -> list[str]:
+    """Resolve current B-class population, including live replacement neurons."""
+    names: list[str] = []
+    for node_name, attrs in graph.nodes(data=True):
+        if attrs.get("is_ghosted"):
+            continue
+        if _canonical_neuron_name(node_name) in B_CLASS_MOTOR_NEURONS:
+            names.append(node_name)
+
+    if spike_trains is not None:
+        for node_name in spike_trains.keys():
+            if _canonical_neuron_name(node_name) in B_CLASS_MOTOR_NEURONS:
+                names.append(node_name)
+
+    return sorted(set(names))
+
+
 def _replace_targets_in_graph(
     graph: nx.DiGraph,
     targets: list[str],
@@ -206,6 +233,7 @@ def _collect_step_metrics(
     engine: object,
     bl_voltages: object,
     b_class: list[str],
+    graph: nx.DiGraph | None,
     sensory: list[str],
     motor: list[str],
     step_ms: float,
@@ -231,12 +259,18 @@ def _collect_step_metrics(
         convs = [m.convergence_fraction() for m in ou_managers]
         ou_conv = sum(convs) / len(convs)
 
+    b_class_names = (
+        _active_b_class_population(graph, spike_trains=trains)
+        if graph is not None
+        else b_class
+    )
+
     return StepMetrics(
         step_index=global_step,
         neuron_being_replaced=", ".join(batch),
         edges_migrated=edges_migrated,
         total_edges=total_edges,
-        kuramoto_r=kuramoto_order_parameter(trains, b_class, step_ms),
+        kuramoto_r=kuramoto_order_parameter(trains, b_class_names, step_ms),
         pca_deviation=pca_d,
         pca_sigma=pca_s,
         voltage_entropy=voltage_state_entropy(voltages, step_ms),
@@ -302,7 +336,7 @@ def run_replacement_sweep(
     graph: nx.DiGraph,
     target_neurons: list[str],
     engine_name: str = "brian2",
-    neuron_model: str = "hh",
+    neuron_model: str = "lif",
     burn_in_ms: float = 2000.0,
     baseline_ms: float = 5000.0,
     step_ms: float = 500.0,
@@ -334,7 +368,7 @@ def run_replacement_sweep(
     engine.build(working_graph, neuron_model=neuron_model)
 
     sensory, motor = _neuron_groups(graph)
-    b_class = list(B_CLASS_MOTOR_NEURONS)
+    b_class = _active_b_class_population(graph)
 
     # Burn-in + baseline capture
     engine.run(burn_in_ms)
@@ -371,6 +405,7 @@ def run_replacement_sweep(
                 engine=engine,
                 bl_voltages=bl_voltages,
                 b_class=b_class,
+                graph=service.graph,
                 sensory=sensory,
                 motor=motor,
                 step_ms=step_ms,
@@ -398,7 +433,7 @@ def run_replacement_sweep_stream(
     graph: nx.DiGraph,
     target_neurons: list[str],
     engine_name: str = "brian2",
-    neuron_model: str = "hh",
+    neuron_model: str = "lif",
     burn_in_ms: float = 2000.0,
     baseline_ms: float = 5000.0,
     step_ms: float = 500.0,
@@ -423,7 +458,7 @@ def run_replacement_sweep_stream(
     engine.build(working_graph, neuron_model=neuron_model)
 
     sensory, motor = _neuron_groups(graph)
-    b_class = list(B_CLASS_MOTOR_NEURONS)
+    b_class = _active_b_class_population(graph)
 
     # Estimate total steps for progress reporting
     total_steps = sum(
@@ -477,6 +512,7 @@ def run_replacement_sweep_stream(
                 engine=engine,
                 bl_voltages=bl_voltages,
                 b_class=b_class,
+                graph=service.graph,
                 sensory=sensory,
                 motor=motor,
                 step_ms=step_ms,
@@ -518,6 +554,8 @@ def run_live_sweep_stream(
     rng = stdlib_random.Random(seed)
     engine = sim.engine  # type: ignore[attr-defined]
     graph = sim.graph  # type: ignore[attr-defined]
+    # Alias for compatibility with older code paths that referenced this name.
+    working_graph = graph
     sim_lock = getattr(sim, "lock", getattr(sim, "_lock", None))
 
     def _is_clock_exhaustion(exc: Exception) -> bool:
@@ -557,7 +595,7 @@ def run_live_sweep_stream(
             return
 
     sensory, motor = _neuron_groups(graph)
-    b_class = list(B_CLASS_MOTOR_NEURONS)
+    b_class = _active_b_class_population(working_graph)
 
     total_steps = sum(
         math.ceil((graph.in_degree(n) + graph.out_degree(n)) / edges_per_step)
@@ -649,6 +687,7 @@ def run_live_sweep_stream(
                             engine=engine,
                             bl_voltages=bl_voltages,
                             b_class=b_class,
+                            graph=service.graph,
                             sensory=sensory,
                             motor=motor,
                             step_ms=step_ms,
@@ -664,6 +703,7 @@ def run_live_sweep_stream(
                         engine=engine,
                         bl_voltages=bl_voltages,
                         b_class=b_class,
+                        graph=service.graph,
                         sensory=sensory,
                         motor=motor,
                         step_ms=step_ms,

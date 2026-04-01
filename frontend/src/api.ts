@@ -27,6 +27,13 @@ export async function fetchLiveSimulation(): Promise<LiveSimulationResponse> {
   return response.json() as Promise<LiveSimulationResponse>
 }
 
+export async function resetSimulationSession(): Promise<void> {
+  const response = await fetch('/api/simulation/session/reset', { method: 'POST' })
+  if (!response.ok) {
+    throw new Error(`Failed to reset simulation session: ${response.status}`)
+  }
+}
+
 export async function fetchSpikeTrains(): Promise<SpikeData> {
   const response = await fetch('/api/simulation/spikes')
   if (!response.ok) {
@@ -197,6 +204,13 @@ export function connectSweepStream(
 
   const url = `/api/simulation/replacement-sweep/stream?${search.toString()}`
   const source = new EventSource(url)
+  let closed = false
+
+  const close = (): void => {
+    if (closed) return
+    closed = true
+    source.close()
+  }
 
   source.addEventListener('baseline', (e: MessageEvent) => {
     callbacks.onBaseline(JSON.parse(e.data) as SweepBaselineEvent)
@@ -204,14 +218,33 @@ export function connectSweepStream(
   source.addEventListener('step', (e: MessageEvent) => {
     callbacks.onStep(JSON.parse(e.data) as SweepStepEvent)
   })
+  source.addEventListener('error', (e: MessageEvent) => {
+    if (closed) return
+    let message = 'Sweep stream failed'
+    try {
+      const payload = JSON.parse(e.data) as { message?: string; error?: string }
+      message = payload.message ?? payload.error ?? message
+    } catch {
+      if (typeof e.data === 'string' && e.data.trim().length > 0) {
+        message = e.data
+      }
+    }
+    close()
+    callbacks.onError(message)
+  })
   source.addEventListener('done', () => {
-    source.close()
+    close()
     callbacks.onDone()
   })
   source.onerror = () => {
-    source.close()
+    if (closed) return
+    if (source.readyState === EventSource.CLOSED) {
+      close()
+      return
+    }
+    close()
     callbacks.onError('Connection to sweep stream lost')
   }
 
-  return { close: () => source.close() }
+  return { close }
 }

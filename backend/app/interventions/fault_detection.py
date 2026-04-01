@@ -37,6 +37,9 @@ class FaultDetectionService:
         "weakest_synapses_first",
     )
 
+    _COMMAND_PREFIXES = ("AVA", "AVB", "AVD", "AVE", "PVC")
+    _LOCOMOTION_MOTOR_PREFIXES = ("DB", "VB", "DD", "VD")
+
     @staticmethod
     def candidate_neurons(graph: nx.DiGraph) -> list[str]:
         return [
@@ -114,9 +117,54 @@ class FaultDetectionService:
                 rich_neighbor_fraction = 0.0
             rich_membership = 1.0 if node in rich_nodes else 0.0
             rich_score = 0.7 * rich_membership + 0.3 * rich_neighbor_fraction
-            hubness = float(degree_centrality.get(node, 0.0)) + 0.5 * rich_score
+            # Command interneurons are treated as extra-critical hubs so that
+            # peripheral-first naturally keeps them for the tail of replacement.
+            command_bonus = 0.45 if node.startswith(self._COMMAND_PREFIXES) else 0.0
+            hubness = float(degree_centrality.get(node, 0.0)) + 0.5 * rich_score + command_bonus
             scores[node] = hubness
         return scores
+
+    def _redundancy_aware_order(
+        self,
+        graph: nx.DiGraph,
+        candidates: list[str],
+        seed: int | None = None,
+    ) -> list[str]:
+        """Stage replacements by structural backup availability.
+
+        High-redundancy neurons are scheduled first. Mid/low redundancy neurons
+        are deferred to later waves so that unique nodes are only touched after
+        the network has already swapped similar nodes.
+        """
+        redundancy = self._redundancy_scores(graph, candidates)
+        if not redundancy:
+            return []
+
+        values = np.array(list(redundancy.values()), dtype=float)
+        hi_cut = float(np.percentile(values, 67.0))
+        lo_cut = float(np.percentile(values, 33.0))
+
+        high: list[str] = []
+        mid: list[str] = []
+        low: list[str] = []
+        for node in candidates:
+            score = redundancy[node]
+            if score >= hi_cut:
+                high.append(node)
+            elif score <= lo_cut:
+                low.append(node)
+            else:
+                mid.append(node)
+
+        def _sort_desc(group: list[str]) -> list[str]:
+            return sorted(
+                group,
+                key=lambda n: (redundancy[n], self._stable_noise(n, seed)),
+                reverse=True,
+            )
+
+        # High backup first, then medium, then unique/low-backup neurons.
+        return _sort_desc(high) + _sort_desc(mid) + _sort_desc(low)
 
     def _redundancy_scores(
         self,
@@ -195,11 +243,9 @@ class FaultDetectionService:
 
     @staticmethod
     def _locomotion_core_neurons(nodes: Iterable[str]) -> set[str]:
-        command_prefixes = ("AVA", "AVB", "AVD", "AVE", "PVC")
-        motor_prefixes = ("DB", "VB", "DD", "VD")
         core: set[str] = set()
         for name in nodes:
-            if name.startswith(command_prefixes) or name.startswith(motor_prefixes):
+            if name.startswith(FaultDetectionService._COMMAND_PREFIXES) or name.startswith(FaultDetectionService._LOCOMOTION_MOTOR_PREFIXES):
                 core.add(name)
         return core
 
@@ -215,17 +261,17 @@ class FaultDetectionService:
 
         scores: dict[str, float] = {}
         for node in candidates:
-            is_command = 1.0 if node.startswith(("AVA", "AVB", "AVD", "AVE", "PVC")) else 0.0
-            is_motor_chain = 1.0 if node.startswith(("DB", "VB", "DD", "VD")) else 0.0
+            is_command = 1.0 if node.startswith(self._COMMAND_PREFIXES) else 0.0
+            is_motor_chain = 1.0 if node.startswith(self._LOCOMOTION_MOTOR_PREFIXES) else 0.0
             is_core = 1.0 if node in core else 0.0
             degree_term = float(degree_centrality.get(node, 0.0))
             lesion_term = float(lesion_impact_by_neuron.get(node, 0.0))
             scores[node] = (
-                1.3 * is_command
-                + 0.9 * is_motor_chain
-                + 0.5 * is_core
-                + 0.7 * degree_term
-                + 1.2 * lesion_term
+                1.6 * is_command
+                + 1.1 * is_motor_chain
+                + 0.6 * is_core
+                + 0.6 * degree_term
+                + 1.4 * lesion_term
             )
         return scores
 
@@ -357,15 +403,10 @@ class FaultDetectionService:
             )
 
         if strategy == "redundancy_aware":
-            redundancy = self._redundancy_scores(graph, candidates)
-            # High redundancy first; unique nodes naturally drift to the tail.
-            return sorted(
-                candidates,
-                key=lambda n: (
-                    redundancy[n],
-                    self._stable_noise(n, seed),
-                ),
-                reverse=True,
+            return self._redundancy_aware_order(
+                graph=graph,
+                candidates=candidates,
+                seed=seed,
             )
 
         if strategy == "synchrony_preserving":

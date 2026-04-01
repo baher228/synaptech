@@ -1,6 +1,11 @@
 import './style.css'
 
-import { fetchGraphData, fetchReplacementGraph, fetchSpikeTrains } from './api'
+import {
+  fetchGraphData,
+  fetchReplacementGraph,
+  fetchSpikeTrains,
+  resetSimulationSession,
+} from './api'
 import { createRenderer } from './graph/renderer'
 import { setupInteractions } from './graph/interactions'
 import { createFiringEngine } from './simulation/firing-engine'
@@ -30,6 +35,14 @@ async function boot(): Promise<void> {
   document.body.appendChild(loading)
 
   try {
+    // Ensure the persistent live simulation starts from a clean baseline.
+    // This avoids inheriting a stale/exhausted session that can report zero rates.
+    try {
+      await resetSimulationSession()
+    } catch {
+      // Non-fatal: app can still boot with existing session state.
+    }
+
     let data
     try {
       data = await fetchReplacementGraph()

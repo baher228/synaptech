@@ -147,15 +147,23 @@ function createLivePollingEngine(
     }
   }
 
-  function setProbabilitiesFromLiveRates(ratesHzByNode: Record<string, number>): void {
+  function setProbabilitiesFromLiveRates(ratesHzByNode: Record<string, number>): boolean {
+    let hasActive = false
+    const nextProbabilities = new Map<string, number>()
     for (const nodeId of graph.nodes()) {
       const hz = ratesHzByNode[nodeId] ?? 0
+      if (hz > 0) hasActive = true
       const probability = Math.min(
         MAX_STEP_FIRE_PROBABILITY,
         Math.max(0, (hz * BASE_INTERVAL_MS) / 1000),
       )
-      fireProbabilities.set(nodeId, probability)
+      nextProbabilities.set(nodeId, probability)
     }
+    if (!hasActive) return false
+    nextProbabilities.forEach((value, nodeId) => {
+      fireProbabilities.set(nodeId, value)
+    })
+    return hasActive
   }
 
   async function refreshLiveModel(): Promise<void> {
@@ -166,8 +174,16 @@ function createLivePollingEngine(
 
     try {
       const payload = await fetchLiveSimulation()
-      setProbabilitiesFromLiveRates(payload.firing_rates_hz_by_node)
-      hasLiveData = true
+      const hasActivity = setProbabilitiesFromLiveRates(payload.firing_rates_hz_by_node)
+      if (!hasActivity) {
+        // Guard against stale live sessions briefly returning all-zero rates:
+        // keep prior live probabilities (or fallback if we have none yet).
+        if (!hasLiveData) {
+          setFallbackProbabilities()
+        }
+      } else {
+        hasLiveData = true
+      }
       options.onLiveUpdate?.(payload)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown live-data error'
